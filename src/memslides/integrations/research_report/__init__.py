@@ -3,4 +3,3 @@
 from .adapter import AdaptationResult, ResearchReportAdapterError, adapt_research_report
 
 __all__ = ["AdaptationResult", "ResearchReportAdapterError", "adapt_research_report"]
-

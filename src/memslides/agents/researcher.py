@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from memslides.utils.constants import (
     FORCE_FINALIZE_MSG,
     MAX_AGENT_ITERATIONS,
@@ -10,6 +12,26 @@ from .agent import Agent
 
 class Researcher(Agent):
     async def loop(self, req: InputRequest):
+        prebuilt_manuscript = str(
+            (req.extra_info or {}).get("prebuilt_manuscript", "") or ""
+        ).strip()
+        if prebuilt_manuscript:
+            workspace = self.workspace.resolve()
+            manuscript_path = Path(prebuilt_manuscript)
+            if not manuscript_path.is_absolute():
+                manuscript_path = workspace / manuscript_path
+            manuscript_path = manuscript_path.resolve()
+            if not manuscript_path.is_relative_to(workspace):
+                raise ValueError(
+                    "prebuilt_manuscript must be located inside the session workspace."
+                )
+            if not manuscript_path.is_file():
+                raise FileNotFoundError(
+                    f"prebuilt_manuscript does not exist: {manuscript_path}"
+                )
+            yield str(manuscript_path)
+            return
+
         _iter = 0
         outcome = None
         while True:

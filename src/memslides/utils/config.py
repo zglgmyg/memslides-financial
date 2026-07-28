@@ -50,6 +50,8 @@ _NON_RETRYABLE_LLM_ERROR_MARKERS = (
     "model_not_found",
     "No available channel for model",
     "insufficient_user_quota",
+    "insufficient balance",
+    "error code: 402",
     "quota",
     "billing",
     "account balance",
@@ -72,8 +74,8 @@ def _expand_env_placeholders(value: Any) -> Any:
 
 
 def _is_non_retryable_llm_error(exc: Exception) -> bool:
-    message = str(exc)
-    return any(marker in message for marker in _NON_RETRYABLE_LLM_ERROR_MARKERS)
+    message = str(exc).lower()
+    return any(marker.lower() in message for marker in _NON_RETRYABLE_LLM_ERROR_MARKERS)
 
 
 def _merge_vllm_extra_body(request_options: dict[str, Any]) -> dict[str, Any]:

@@ -69,6 +69,25 @@ MemSlides can then consume `manuscript.md` and `asset_manifest.json` in its
 existing generation flow. Later LLM stages may design the slide around these
 assets, but they do not regenerate the audited values.
 
+## Generate a complete deck
+
+After installing the project and setting `DEEPSEEK_API_KEY`, run the full
+design and export pipeline with a fresh output directory:
+
+```bash
+python -m memslides.integrations.research_report.generate \
+  --outline /path/to/run/slide_outline.json \
+  --visualization-manifest /path/to/run/visualizations/visualization_manifest.json \
+  --numeric-audit /path/to/run/numeric_audit.json \
+  --output-dir .memslides/financial-deck
+```
+
+This command bypasses the Researcher LLM, feeds the prebuilt manuscript to the
+native DeckDesigner, then runs the normal HTML repair and PPTX/PDF export. It
+hashes the manuscript, evidence files, and every verified asset before design
+and fails if any of them changes. A successful run writes
+`financial_generation_receipt.json` with the output paths and integrity hashes.
+
 ## Chart compatibility
 
 The adapter currently supports `line`, `column`, `bar`, `area`, `pie`, and
