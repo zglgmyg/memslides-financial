@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,45 @@ def _assert_unchanged(before: dict[str, str]) -> None:
     if changed:
         raise FinancialGenerationError(
             "MemSlides modified read-only financial artifacts: " + ", ".join(changed)
+        )
+
+
+def _validate_slide_html_dir(slide_html_dir: Path, expected_count: int) -> None:
+    """Reject partial DeckDesigner output before issuing a success receipt."""
+
+    missing: list[str] = []
+    invalid: list[str] = []
+    for page_number in range(1, expected_count + 1):
+        name = f"slide_{page_number:02d}.html"
+        path = slide_html_dir / name
+        if not path.is_file():
+            missing.append(name)
+            continue
+        try:
+            html = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            invalid.append(name)
+            continue
+        lowered = html.lower()
+        placeholder = "html 已压缩" in lowered or "html 已壓縮" in lowered
+        has_body = "<body" in lowered and "</body>" in lowered
+        has_visual = bool(re.search(r"<(?:img|svg|canvas|table)\b", lowered))
+        body_match = re.search(r"<body\b[^>]*>(.*?)</body>", html, flags=re.I | re.S)
+        body_text = ""
+        if body_match:
+            body_text = re.sub(r"<[^>]+>", " ", body_match.group(1))
+            body_text = re.sub(r"\s+", " ", body_text).strip()
+        if placeholder or not has_body or (not body_text and not has_visual):
+            invalid.append(name)
+
+    if missing or invalid:
+        details: list[str] = []
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        if invalid:
+            details.append("blank_or_placeholder=" + ",".join(invalid))
+        raise FinancialGenerationError(
+            "DeckDesigner produced an incomplete slide HTML set: " + "; ".join(details)
         )
 
 
@@ -165,6 +205,7 @@ async def generate_financial_deck(
         raise FinancialGenerationError("MemSlides did not produce a PPTX file.")
     if slide_html_dir is None or not slide_html_dir.is_dir():
         raise FinancialGenerationError("MemSlides did not produce a slide HTML directory.")
+    _validate_slide_html_dir(slide_html_dir, slide_count)
     pdf_path = Path(deck_result.pdf_path).resolve() if deck_result.pdf_path else None
     if pdf_path is not None and not pdf_path.is_file():
         pdf_path = None

@@ -12,6 +12,7 @@ from memslides.integrations.research_report.generate import (
     FinancialGenerationError,
     _assert_unchanged,
     _snapshot,
+    _validate_slide_html_dir,
 )
 from memslides.pipelines.generation import _write_content_asset_manifest
 from memslides.utils.config import _is_non_retryable_llm_error
@@ -112,3 +113,26 @@ def test_insufficient_balance_is_not_retried() -> None:
     )
 
     assert _is_non_retryable_llm_error(error) is True
+
+
+def test_slide_html_validation_rejects_compacted_placeholder(tmp_path: Path) -> None:
+    (tmp_path / "slide_01.html").write_text(
+        "<html><body><h1>Complete slide</h1></body></html>", encoding="utf-8"
+    )
+    (tmp_path / "slide_02.html").write_text(
+        "<html><head><style>[原 HTML 已压缩]</style></head></html>", encoding="utf-8"
+    )
+
+    with pytest.raises(FinancialGenerationError, match="slide_02.html"):
+        _validate_slide_html_dir(tmp_path, 2)
+
+
+def test_slide_html_validation_accepts_text_and_visual_slides(tmp_path: Path) -> None:
+    (tmp_path / "slide_01.html").write_text(
+        "<html><body><h1>Text slide</h1></body></html>", encoding="utf-8"
+    )
+    (tmp_path / "slide_02.html").write_text(
+        '<html><body><img src="chart.svg" alt="chart"></body></html>', encoding="utf-8"
+    )
+
+    _validate_slide_html_dir(tmp_path, 2)
