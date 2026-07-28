@@ -41,6 +41,7 @@ research = [
   "jieba",
   "PyStemmer",
   "markitdown",
+  "sentence-transformers",
 ]
 
 [project.scripts]

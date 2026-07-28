@@ -194,6 +194,11 @@ are expanded from the current process environment when the YAML is loaded.
 Generated outputs, caches, private YAML files, and credentials must not be
 committed.
 
+This fork defaults its text and tool-calling routes to DeepSeek V4 through the
+OpenAI-compatible endpoint. Set `DEEPSEEK_API_KEY` before generation. See
+[docs/deepseek.md](docs/deepseek.md) for model routing, local embeddings, and
+the current text-only limitation.
+
 For Docker runs with a private YAML file:
 
 ```bash
@@ -226,6 +231,13 @@ python -m memslides generate --instruction "Create a one-slide project summary" 
 python -m memslides revise --workspace .memslides/session --feedback "Tighten the title"
 python -m memslides template induct --template-file template.pptx
 ```
+
+## Financial Research Integration
+
+The fork includes a fail-closed adapter that converts an audited research-report
+outline, visualization manifest, and numeric audit into a MemSlides manuscript
+and verified asset manifest. See
+[docs/financial-integration.md](docs/financial-integration.md).
 
 ## Security And Privacy
 

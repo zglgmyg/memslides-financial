@@ -4,21 +4,26 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import math
 import re
 import unicodedata
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from memslides.memory.core.template_models import DesignConstraints
-from memslides.utils.config import MemSlidesConfig
-from memslides.utils.log import warning
+
+if TYPE_CHECKING:
+    from memslides.utils.config import MemSlidesConfig
 
 try:
     import vl_convert as vlc
 except ImportError:  # pragma: no cover - exercised via runtime failure path
     vlc = None
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_FONT_STACK = "'Noto Sans CJK SC', 'Microsoft YaHei', Arial, sans-serif"
@@ -469,7 +474,7 @@ def register_visual_font_dirs(
         except Exception:
             resolved = path
         if not resolved.exists() or not resolved.is_dir():
-            warning("Structured visual font dir missing or not a directory: %s", resolved)
+            logger.warning("Structured visual font dir missing or not a directory: %s", resolved)
             continue
         key = str(resolved)
         if key in _REGISTERED_FONT_DIRS:
@@ -480,7 +485,7 @@ def register_visual_font_dirs(
             _REGISTERED_FONT_DIRS.add(key)
             registered.append(key)
         except Exception as exc:  # pragma: no cover - depends on runtime fonts
-            warning("Failed to register structured visual font dir %s: %s", key, exc)
+            logger.warning("Failed to register structured visual font dir %s: %s", key, exc)
     return registered
 
 
@@ -2215,7 +2220,7 @@ def collect_generated_visual_entries(workspace: str | Path | None = None) -> lis
         try:
             payload = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            warning("Failed to parse generated visual metadata %s: %s", meta_path, exc)
+            logger.warning("Failed to parse generated visual metadata %s: %s", meta_path, exc)
             continue
         if not isinstance(payload, dict):
             continue
