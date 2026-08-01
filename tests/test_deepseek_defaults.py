@@ -5,6 +5,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "src" / "memslides" / "memslides.yaml"
+DECK_DESIGNER_ROLE_PATH = ROOT / "src" / "memslides" / "roles" / "DeckDesigner.yaml"
 
 
 def test_packaged_llm_routes_use_current_deepseek_defaults() -> None:
@@ -48,3 +49,9 @@ def test_memory_embeddings_are_local_not_openai_or_deepseek() -> None:
     assert embedding["api_key"] == "${MEMSLIDES_EMBEDDING_API_KEY:-}"
     assert "api.openai.com" not in CONFIG_PATH.read_text(encoding="utf-8")
 
+
+def test_deck_designer_keeps_thinking_tool_for_long_running_deck_state() -> None:
+    role = yaml.safe_load(DECK_DESIGNER_ROLE_PATH.read_text(encoding="utf-8"))
+
+    assert "thinking" in role["include_tools"]
+    assert "thinking" not in role["exclude_tools"]

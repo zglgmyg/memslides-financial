@@ -48,6 +48,17 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     return payload
 
 
+def _resolve_template_path(template_path: str | Path | None) -> Path | None:
+    if template_path is None:
+        return None
+    resolved = Path(template_path).expanduser().resolve()
+    if not resolved.is_file():
+        raise FinancialGenerationError(f"Template PPTX does not exist: {resolved}")
+    if resolved.suffix.lower() != ".pptx":
+        raise FinancialGenerationError(f"Template must be a .pptx file: {resolved}")
+    return resolved
+
+
 def _protected_files(adaptation: AdaptationResult) -> list[Path]:
     manifest = _read_object(adaptation.asset_manifest, "asset_manifest.json")
     paths = [adaptation.manuscript, adaptation.asset_manifest, adaptation.evidence_manifest]
@@ -130,10 +141,12 @@ async def generate_financial_deck(
     numeric_audit_path: str | Path,
     output_dir: str | Path,
     config_path: str | Path | None = None,
+    template_path: str | Path | None = None,
     instruction: str = "",
 ) -> FinancialGenerationResult:
     """Run audited adaptation, DeckDesigner, repair, and PPTX/PDF export."""
 
+    resolved_template = _resolve_template_path(template_path)
     workspace = Path(output_dir).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     stale_pptx = list(workspace.glob("*.pptx"))
@@ -180,6 +193,8 @@ async def generate_financial_deck(
         instruction=design_instruction,
         num_pages=slide_count,
         language="zh",
+        template=resolved_template,
+        template_as_reference=resolved_template is not None,
         extra_info={
             "prebuilt_manuscript": str(adaptation.manuscript),
             "prebuilt_asset_manifest": str(adaptation.asset_manifest),
@@ -256,6 +271,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--numeric-audit", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--config", type=Path, help="Optional MemSlides YAML config")
+    parser.add_argument("--template", type=Path, help="Optional PPTX design template")
     parser.add_argument("--instruction", default="", help="Optional design-only instruction")
     return parser
 
@@ -269,6 +285,7 @@ def main() -> int:
             numeric_audit_path=args.numeric_audit,
             output_dir=args.output_dir,
             config_path=args.config,
+            template_path=args.template,
             instruction=args.instruction,
         )
     )

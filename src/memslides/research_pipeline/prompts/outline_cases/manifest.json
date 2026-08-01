@@ -1,0 +1,6 @@
+{
+  "schema_version": "3.0.0",
+  "selector_version": "rule-based-v1",
+  "max_selected_cases": 4,
+  "description": "静态 Outline Planning case library。只允许确定性规则选择，不包含 memory、embedding、vector DB 或自动学习。"
+}

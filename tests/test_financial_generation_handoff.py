@@ -11,6 +11,7 @@ from memslides.agents.researcher import Researcher
 from memslides.integrations.research_report.generate import (
     FinancialGenerationError,
     _assert_unchanged,
+    _resolve_template_path,
     _snapshot,
     _validate_slide_html_dir,
 )
@@ -113,6 +114,26 @@ def test_insufficient_balance_is_not_retried() -> None:
     )
 
     assert _is_non_retryable_llm_error(error) is True
+
+
+def test_template_path_accepts_pptx(tmp_path: Path) -> None:
+    template = tmp_path / "school.pptx"
+    template.write_bytes(b"pptx fixture")
+
+    assert _resolve_template_path(template) == template.resolve()
+
+
+def test_template_path_rejects_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(FinancialGenerationError, match="does not exist"):
+        _resolve_template_path(tmp_path / "missing.pptx")
+
+
+def test_template_path_rejects_non_pptx(tmp_path: Path) -> None:
+    template = tmp_path / "school.ppt"
+    template.write_bytes(b"legacy fixture")
+
+    with pytest.raises(FinancialGenerationError, match="must be a .pptx"):
+        _resolve_template_path(template)
 
 
 def test_slide_html_validation_rejects_compacted_placeholder(tmp_path: Path) -> None:

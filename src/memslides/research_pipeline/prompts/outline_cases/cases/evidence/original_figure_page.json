@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "id": "original_figure_page",
+  "name": "原始PDF图片独立保真迁移",
+  "category": "evidence",
+  "priority": 80,
+  "match": {
+    "all": ["has_selectable_figures"],
+    "any": [],
+    "none": []
+  },
+  "guidance": {
+    "applicable_when": [
+      "figure_inventory包含selectable=true且能够直接支持研报重要观点的原始图片"
+    ],
+    "recommended": [
+      "每张被选择的figure单独生成一个figure_page",
+      "evidence_refs只引用该一个figure",
+      "所有figure_page严格按照figure_inventory.order递增"
+    ],
+    "avoid": [
+      "不得一页放置多张figure",
+      "不得为原始figure生成chart或table",
+      "不得选择装饰图、无关图或交换PDF原始顺序"
+    ]
+  },
+  "example": {
+    "input": {
+      "figure_inventory": [
+        {
+          "figure_id": "fig-007",
+          "caption": "公司PDT星通站实现一站多能",
+          "section_id": "sec-1-2",
+          "selectable": true,
+          "order": 7
+        }
+      ]
+    },
+    "expected": {
+      "page_role": "content",
+      "slide_type": "figure_page",
+      "section_ref": "sec-1-2",
+      "title": "公司PDT星通站实现一站多能",
+      "bullet_points": [],
+      "evidence_refs": [
+        {
+          "kind": "figure",
+          "id": "fig-007"
+        }
+      ],
+      "visual_candidates": []
+    }
+  }
+}

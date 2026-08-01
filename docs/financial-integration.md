@@ -1,11 +1,42 @@
 # Financial research-report integration
 
-This repository includes a Stage 0 adapter for using MemSlides as the design,
-revision, and export layer behind an audited financial research pipeline.
+This repository includes the complete financial research-report handoff: an
+upstream pipeline produces audited structured artifacts, then the Stage 0
+adapter uses MemSlides as the design, revision, and export layer.
+
+## Generate the structured research run
+
+Install the optional research dependencies first:
+
+```bash
+pip install -e ".[research]"
+```
+
+Convert a PDF, Markdown, TXT, or existing DocumentBundle into the three audited
+inputs consumed by the adapter:
+
+```bash
+memslides-research-run /path/to/report.pdf \
+  --output-dir .memslides/research-run
+```
+
+The equivalent module command is:
+
+```bash
+python -m memslides.research_pipeline.research_run \
+  /path/to/report.pdf \
+  --output-dir .memslides/research-run
+```
+
+PDF parsing reads `MINERU_API_TOKEN`; automatic outline generation reads
+`DEEPSEEK_API_KEY`. Do not store either value in the repository or generated
+JSON. Use `--outline-input` to reuse a previously reviewed outline without an
+outline-generation request. Existing output directories are protected unless
+`--overwrite` is explicitly supplied.
 
 ## Boundary
 
-The upstream research pipeline remains responsible for document parsing,
+The upstream research pipeline is responsible for document parsing,
 evidence selection, outline generation, numeric fact normalization, chart/table
 data construction, and numeric audit. The adapter accepts exactly these three
 artifacts:
@@ -76,11 +107,20 @@ design and export pipeline with a fresh output directory:
 
 ```bash
 python -m memslides.integrations.research_report.generate \
-  --outline /path/to/run/slide_outline.json \
-  --visualization-manifest /path/to/run/visualizations/visualization_manifest.json \
-  --numeric-audit /path/to/run/numeric_audit.json \
+  --outline .memslides/research-run/slide_outline.json \
+  --visualization-manifest .memslides/research-run/visualizations/visualization_manifest.json \
+  --numeric-audit .memslides/research-run/numeric_audit.json \
+  --template /path/to/school-template.pptx \
   --output-dir .memslides/financial-deck
 ```
+
+`--template` is optional. When supplied, the existing MemSlides template
+analysis and quality-selection flow uses the PPTX as a structural or style
+reference. Omitting it preserves the original model-designed generation flow.
+Template semantic analysis resolves `template_analyze` through the same model
+routing used by ordinary report generation even though financial generation
+keeps content memory disabled. This enables narrative, section, and bullet-style
+analysis without reading or writing historical memory.
 
 This command bypasses the Researcher LLM, feeds the prebuilt manuscript to the
 native DeckDesigner, then runs the normal HTML repair and PPTX/PDF export. It

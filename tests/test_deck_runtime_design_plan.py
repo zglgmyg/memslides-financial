@@ -102,3 +102,13 @@ def test_visible_safe_zone_note_is_warning_but_debug_repair_text_is_error(tmp_pa
     debug = {item["code"]: item["severity"] for item in debug_diagnostics}
     assert safe["visible_safe_zone_note"] == "warning"
     assert debug["visible_layout_repair_note"] == "error"
+
+
+def test_write_html_rejects_history_compaction_marker_before_writing(tmp_path: Path) -> None:
+    output = tmp_path / "slide_05.html"
+    content = "<!doctype html><html><body><p>内容</p>[旧 HTML 已压缩]</body></html>"
+
+    result = deck_runtime.write_html_file.fn(str(output), content)
+
+    assert "WRITE_HTML_TRUNCATED_PLACEHOLDER" in result
+    assert not output.exists()

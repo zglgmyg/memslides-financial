@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "id": "source_title_fidelity",
+  "name": "原文章节标题逐字保留",
+  "category": "content",
+  "priority": 100,
+  "match": {
+    "all": ["has_section_titles"],
+    "any": [],
+    "none": []
+  },
+  "guidance": {
+    "applicable_when": [
+      "页面具有section_ref且section_catalog中存在原始章节标题"
+    ],
+    "recommended": [
+      "title逐字复制section_catalog中的原始标题，包括编号、标点和措辞",
+      "同一章节拆为多页时仍可重复使用同一原始标题"
+    ],
+    "avoid": [
+      "不得将原始标题改写为更有结论感的投资观点",
+      "不得为了避免标题重复而删除章节编号或同义改写"
+    ]
+  },
+  "example": {
+    "input": {
+      "section_title": "1.2 卫星互联网行业快速发展，公司深度研发带来重要卡位优势",
+      "paragraph": "公司持续参与产业标准制定，并推进高端PCB、时频器件和卫星通信产品布局。"
+    },
+    "expected": {
+      "page_role": "content",
+      "title": "1.2 卫星互联网行业快速发展，公司深度研发带来重要卡位优势"
+    },
+    "incorrect": {
+      "title": "卫星互联网加速发展，公司卡位优势显著"
+    }
+  }
+}

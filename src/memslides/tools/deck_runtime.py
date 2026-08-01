@@ -9043,6 +9043,22 @@ def write_html_file(
         Success message with the file path, or error message if failed
     """
     try:
+        truncated_marker = _find_truncated_html_marker(content)
+        if truncated_marker:
+            warning(
+                "Rejected HTML write containing a history-compaction marker "
+                "for %s (marker: %s)",
+                file_path,
+                truncated_marker,
+            )
+            return (
+                "Error: WRITE_HTML_TRUNCATED_PLACEHOLDER. The submitted HTML "
+                "contains an internal history-compaction marker "
+                f"({truncated_marker}). Regenerate the complete slide from "
+                "manuscript.md and design_plan.md; do not copy HTML from "
+                "historical tool calls."
+            )
+
         path = _normalize_path(file_path)
         existed_before = path.exists()
 

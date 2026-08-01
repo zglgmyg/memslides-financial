@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-report-ppt-agent.local/schemas/visualization.schema.json",
+  "title": "Research Report Visualization",
+  "description": "研报可视化数据层契约，描述来自 DocumentBundle 的 chart、table 或 image，不描述 PPT 布局。",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/chart"
+    },
+    {
+      "$ref": "#/$defs/table"
+    },
+    {
+      "$ref": "#/$defs/image"
+    }
+  ],
+  "$defs": {
+    "native_source": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["block", "table", "figure"]},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "native_sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/native_source"},
+      "uniqueItems": true
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^src_[A-Za-z0-9_.-]+$"
+      },
+      "uniqueItems": true
+    },
+    "chart_series": {
+      "type": "object",
+      "required": [
+        "name",
+        "values"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "axis": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "secondary"
+          ]
+        },
+        "number_format": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "chart": {
+      "type": "object",
+      "required": [
+        "chart_type",
+        "title",
+        "unit",
+        "categories",
+        "series",
+        "source_refs"
+      ],
+      "properties": {
+        "chart_type": {
+          "type": "string",
+          "enum": [
+            "line",
+            "column",
+            "bar",
+            "area",
+            "pie",
+            "scatter"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string"
+        },
+        "categories": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "series": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/chart_series"
+          }
+        },
+        "forecast_start_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_refs": {
+          "$ref": "#/$defs/source_refs"
+        },
+        "sources": {
+          "$ref": "#/$defs/native_sources"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "table_cell": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "table": {
+      "type": "object",
+      "required": [
+        "title",
+        "columns",
+        "rows",
+        "source_refs"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/table_cell"
+            }
+          }
+        },
+        "source_refs": {
+          "$ref": "#/$defs/source_refs"
+        },
+        "sources": {
+          "$ref": "#/$defs/native_sources"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "required": ["type", "title", "source", "asset_path", "source_refs", "sources"],
+      "properties": {
+        "type": {"const": "image"},
+        "title": {"type": "string", "minLength": 1},
+        "source": {
+          "allOf": [
+            {"$ref": "#/$defs/native_source"},
+            {"properties": {"kind": {"enum": ["figure", "table"]}}}
+          ]
+        },
+        "asset_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "source_refs": {"$ref": "#/$defs/source_refs"},
+        "sources": {"$ref": "#/$defs/native_sources"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

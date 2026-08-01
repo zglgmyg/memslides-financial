@@ -6,6 +6,7 @@ from itertools import cycle
 from math import ceil, gcd, lcm
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import json_repair
 import yaml
@@ -22,6 +23,7 @@ from memslides.utils.constants import (
     RETRY_TIMES,
 )
 from memslides.utils.log import debug, error, info, logging_openai_exceptions
+from memslides.utils.typings import ChatCompletionMessageFunctionToolCall, Function
 
 LLM_KEY_FALLBACKS: dict[str, str] = {
     "modify_agent": "design_agent",
@@ -447,6 +449,237 @@ class MissingToolCallError(AssertionError):
         )
 
 
+class MalformedToolCallError(AssertionError):
+    """Raised when a provider serializes one tool call inside another call."""
+
+    def __init__(self, *, model: str, assistant_message: Any, reason: str):
+        self.model = model
+        self.assistant_message = assistant_message
+        self.assistant_text = _extract_visible_message_text(assistant_message)
+        if not self.assistant_text:
+            for tool_call in getattr(assistant_message, "tool_calls", None) or []:
+                try:
+                    arguments = json.loads(tool_call.function.arguments or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                thought = arguments.get("thought") if isinstance(arguments, dict) else None
+                if not isinstance(thought, str) or "DSML" not in thought:
+                    continue
+                dsml_at = thought.find("DSML")
+                marker_at = thought.rfind("<", 0, dsml_at)
+                intent = thought[:marker_at if marker_at >= 0 else dsml_at]
+                self.assistant_text = re.sub(
+                    r"<[^>\r\n]*thinking[^>]*>\s*$",
+                    "",
+                    intent,
+                    flags=re.IGNORECASE,
+                ).strip()[:2000]
+                break
+        self.reason = reason
+        super().__init__(f"Malformed structured tool call: {reason}")
+
+
+_DSML_INVOKE_RE = re.compile(
+    r"<[^>\r\n]*DSML[^>\r\n]*invoke\s+name=[\"']([^\"']+)[\"'][^>]*>",
+    flags=re.IGNORECASE,
+)
+_DSML_PARAMETER_RE = re.compile(
+    r"<[^>\r\n]*DSML[^>\r\n]*parameter\s+name=[\"']([^\"']+)[\"'][^>]*>",
+    flags=re.IGNORECASE,
+)
+_DSML_TOOL_CALLS_RE = re.compile(
+    r"<[^>\r\n]*DSML[^>\r\n]*tool_calls[^>]*>",
+    flags=re.IGNORECASE,
+)
+
+
+def _tool_schema_by_name(tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    schemas: dict[str, dict[str, Any]] = {}
+    for tool in tools:
+        function = tool.get("function", {}) if isinstance(tool, dict) else {}
+        name = str(function.get("name", "")).strip()
+        if name:
+            schemas[name] = function.get("parameters", {}) or {}
+    return schemas
+
+
+def _strip_dsml_suffix(text: str) -> str:
+    text = re.sub(
+        r"<[^>\r\n]*(?:end[^>\r\n]*thinking|/[^>\r\n]*thinking)[^>]*>\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.strip()
+
+
+def _strip_dsml_closing_tags(text: str) -> str:
+    closing = re.compile(
+        r"\s*</?[^>\r\n]*DSML[^>\r\n]*(?:parameter|invoke|tool_calls)[^>]*>\s*$",
+        flags=re.IGNORECASE,
+    )
+    previous = None
+    while previous != text:
+        previous = text
+        text = closing.sub("", text)
+    return text.rstrip()
+
+
+def _argument_matches_json_type(value: Any, expected: Any) -> bool:
+    if isinstance(expected, list):
+        return any(_argument_matches_json_type(value, item) for item in expected)
+    return {
+        "string": lambda: isinstance(value, str),
+        "boolean": lambda: isinstance(value, bool),
+        "integer": lambda: isinstance(value, int) and not isinstance(value, bool),
+        "number": lambda: isinstance(value, (int, float)) and not isinstance(value, bool),
+        "array": lambda: isinstance(value, list),
+        "object": lambda: isinstance(value, dict),
+        "null": lambda: value is None,
+    }.get(str(expected), lambda: True)()
+
+
+def _validate_recovered_tool_arguments(
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    schema: dict[str, Any],
+) -> None:
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    allowed = set(properties) if isinstance(properties, dict) else set()
+    required = set(schema.get("required", []) or []) if isinstance(schema, dict) else set()
+    unknown = set(arguments) - allowed if allowed else set()
+    missing = required - set(arguments)
+    if unknown:
+        raise ValueError(
+            f"embedded `{tool_name}` has unsupported arguments: {', '.join(sorted(unknown))}"
+        )
+    if missing:
+        raise ValueError(
+            f"embedded `{tool_name}` is missing required arguments: {', '.join(sorted(missing))}"
+        )
+    for name, value in arguments.items():
+        property_schema = properties.get(name, {}) if isinstance(properties, dict) else {}
+        expected_type = property_schema.get("type") if isinstance(property_schema, dict) else None
+        if expected_type and not _argument_matches_json_type(value, expected_type):
+            raise ValueError(
+                f"embedded `{tool_name}` argument `{name}` does not match type `{expected_type}`"
+            )
+
+
+def _normalize_embedded_tool_calls(
+    message: Any,
+    tools: list[dict[str, Any]],
+    *,
+    model: str,
+) -> None:
+    """Recover explicit DeepSeek DSML calls accidentally nested in `thinking`.
+
+    Recovery is deliberately narrow: an explicit DSML invoke name must be present,
+    the named tool must be registered for this request, and the recovered arguments
+    must satisfy that tool's declared parameter names and required fields.
+    """
+    schemas = _tool_schema_by_name(tools)
+    normalized: list[Any] = []
+    changed = False
+
+    for tool_call in list(getattr(message, "tool_calls", None) or []):
+        if getattr(tool_call.function, "name", "") != "thinking":
+            normalized.append(tool_call)
+            continue
+
+        try:
+            raw_arguments = json.loads(tool_call.function.arguments or "{}")
+        except (json.JSONDecodeError, TypeError):
+            normalized.append(tool_call)
+            continue
+        if not isinstance(raw_arguments, dict):
+            normalized.append(tool_call)
+            continue
+
+        thought = raw_arguments.get("thought")
+        if not isinstance(thought, str) or "DSML" not in thought:
+            normalized.append(tool_call)
+            continue
+
+        invokes = list(_DSML_INVOKE_RE.finditer(thought))
+        if len(invokes) != 1:
+            raise MalformedToolCallError(
+                model=model,
+                assistant_message=message,
+                reason=f"expected one embedded DSML invoke, found {len(invokes)}",
+            )
+
+        invoke = invokes[0]
+        embedded_name = invoke.group(1).strip()
+        schema = schemas.get(embedded_name)
+        if schema is None or embedded_name == "thinking":
+            raise MalformedToolCallError(
+                model=model,
+                assistant_message=message,
+                reason=f"embedded tool `{embedded_name}` is not available for this agent",
+            )
+
+        tail = thought[invoke.end():]
+        parameter_matches = list(_DSML_PARAMETER_RE.finditer(tail))
+        if len(parameter_matches) != 1:
+            raise MalformedToolCallError(
+                model=model,
+                assistant_message=message,
+                reason=(
+                    f"embedded `{embedded_name}` must contain exactly one raw DSML "
+                    f"parameter, found {len(parameter_matches)}"
+                ),
+            )
+
+        parameter = parameter_matches[0]
+        embedded_arguments = {
+            key: value
+            for key, value in raw_arguments.items()
+            if key != "thought"
+        }
+        embedded_arguments[parameter.group(1).strip()] = _strip_dsml_closing_tags(
+            tail[parameter.end():]
+        )
+        try:
+            _validate_recovered_tool_arguments(
+                tool_name=embedded_name,
+                arguments=embedded_arguments,
+                schema=schema,
+            )
+        except ValueError as exc:
+            raise MalformedToolCallError(
+                model=model,
+                assistant_message=message,
+                reason=str(exc),
+            ) from exc
+
+        tool_calls_marker = _DSML_TOOL_CALLS_RE.search(thought, 0, invoke.start())
+        clean_cutoff = tool_calls_marker.start() if tool_calls_marker else invoke.start()
+        clean_thought = _strip_dsml_suffix(thought[:clean_cutoff])
+        # Keep the original call id for its thinking result, and allocate a fresh
+        # id for the recovered operational tool so tool/result pairing stays valid.
+        tool_call.function.arguments = json.dumps(
+            {"thought": clean_thought or "Continue with the recovered tool call."},
+            ensure_ascii=False,
+        )
+        normalized.append(tool_call)
+        normalized.append(
+            ChatCompletionMessageFunctionToolCall(
+                id=f"call_{uuid4().hex}",
+                type="function",
+                function=Function(
+                    name=embedded_name,
+                    arguments=json.dumps(embedded_arguments, ensure_ascii=False),
+                ),
+            )
+        )
+        changed = True
+
+    if changed:
+        message.tool_calls = normalized
+
+
 def _repair_missing_tool_call_messages(
     messages: list[Any],
     error: MissingToolCallError,
@@ -470,6 +703,31 @@ def _repair_missing_tool_call_messages(
                 "structured tool calls using the provided tools. Do not restate the "
                 "plan in plain text. If your provider supports tool reasoning text, "
                 "keep it to one short `Reason:` line plus the tool calls."
+            ),
+        }
+    )
+    return repaired_messages
+
+
+def _repair_malformed_tool_call_messages(
+    messages: list[Any],
+    error: MalformedToolCallError,
+) -> list[Any]:
+    repaired_messages = list(messages)
+    repaired_messages.append(
+        {
+            "role": "assistant",
+            "content": error.assistant_text or "[assistant emitted malformed tool calls]",
+        }
+    )
+    repaired_messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Protocol repair: your previous turn nested one tool invocation inside "
+                "another tool's arguments. Re-issue the same next step using separate, "
+                "valid structured tool_calls from the provided tool list. Do not emit "
+                "DSML or serialize a tool call inside `thinking`."
             ),
         }
     )
@@ -583,6 +841,8 @@ class Endpoint(BaseModel):
             f"No choices returned from the model, got {response}"
         )
         message = response.choices[0].message
+        if tools is not None and message.tool_calls:
+            _normalize_embedded_tool_calls(message, tools, model=self.model)
         if response_format is not None:
             message.content = response_format(
                 **get_json_from_response(message.content)
@@ -673,6 +933,7 @@ class LLM(BaseModel):
         effective_retry_times = retry_times or self.retry_times
         max_missing_tool_repairs = min(2, max(0, effective_retry_times - 1))
         missing_tool_repairs = 0
+        malformed_tool_repairs = 0
         errors = []
         if not self._endpoints:
             raise RuntimeError(
@@ -716,6 +977,20 @@ class LLM(BaseModel):
                         info(
                             f"[{current_endpoint.model}] repairing missing tool_calls "
                             f"(attempt {missing_tool_repairs}/{max_missing_tool_repairs})"
+                        )
+                    endpoint = next(iter_endpoints)
+                    continue
+                except MalformedToolCallError as e:
+                    errors.append(f"[{current_endpoint.model}] {e}")
+                    if tools is not None and malformed_tool_repairs < max_missing_tool_repairs:
+                        malformed_tool_repairs += 1
+                        active_messages = _repair_malformed_tool_call_messages(
+                            active_messages,
+                            e,
+                        )
+                        info(
+                            f"[{current_endpoint.model}] repairing malformed tool_calls "
+                            f"(attempt {malformed_tool_repairs}/{max_missing_tool_repairs})"
                         )
                     endpoint = next(iter_endpoints)
                     continue

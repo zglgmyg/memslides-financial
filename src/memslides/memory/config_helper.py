@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from memslides.utils.llm_routing import resolve_task_llm
+
 logger = logging.getLogger(__name__)
 
 
@@ -165,12 +167,7 @@ class MemorySystem:
 
         # ── Resolve LLM ──
         default_llm_ref = mem_cfg.llm_ref
-        default_llm_obj = getattr(global_config, default_llm_ref, None)
-        if default_llm_obj is None:
-            raise ValueError(
-                f"memory.llm_ref='{default_llm_ref}' does not match any LLM in config. "
-                f"Available: research_agent, design_agent, long_context_model, vision_model"
-            )
+        default_llm_obj = resolve_task_llm(global_config)
         logger.info(f"Memory system default LLM: {default_llm_ref}")
 
         # ── 分级 LLM 配置 ──
@@ -183,18 +180,7 @@ class MemorySystem:
             Uses ``global_config[ref]`` which checks both declared fields
             (research_agent, design_agent, …) and extra_llms (fast_model, balanced_model, …).
             """
-            ref = llm_config.get(task_type, default_llm_ref)
-            try:
-                obj = global_config[ref]
-            except (KeyError, AttributeError):
-                obj = None
-            if obj is None:
-                logger.warning(
-                    "memory.llm.%s='%s' not found, fallback to '%s'",
-                    task_type, ref, default_llm_ref,
-                )
-                return default_llm_obj
-            return obj
+            return resolve_task_llm(global_config, task_type)
 
         def _make_llm_callable(llm_obj: Any):
             """Wrap LLM object as async callable(prompt: str) -> str."""

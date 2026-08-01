@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "id": "no_unsupported_valuation",
+  "name": "缺少估值证据时不得生成估值页",
+  "category": "boundary",
+  "priority": 60,
+  "match": {
+    "all": ["has_risk_terms"],
+    "any": [],
+    "none": ["has_valuation_terms"]
+  },
+  "guidance": {
+    "applicable_when": [
+      "来源包含风险提示，但没有目标价、估值方法或估值倍数"
+    ],
+    "recommended": [
+      "只生成有原文证据支持的投资风险页面"
+    ],
+    "avoid": [
+      "不得自行生成估值分析页",
+      "不得自行计算目标价、PE、PB或DCF结果"
+    ]
+  },
+  "example": {
+    "input": {
+      "heading": "风险提示",
+      "paragraph": "卫星互联网建设进度不及预期；行业竞争加剧。"
+    },
+    "expected_slide_type": "investment_risk",
+    "forbidden_slide_type": "valuation_analysis"
+  }
+}

@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-report-ppt-agent.local/schemas/slide_outline.schema.json",
+  "title": "Research Report Slide Outline",
+  "description": "研报幻灯片内容语义层数据契约，只描述页面讲什么、内容来源和可视化意图。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "metadata",
+    "sources",
+    "slides"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "sources": {
+      "type": "array",
+      "description": "全局来源目录。source_id 在同一大纲内必须唯一。",
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "uniqueItems": true
+    },
+    "slides": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/slide"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": [
+        "company",
+        "company_name",
+        "stock_code",
+        "industry",
+        "report_title",
+        "report_date",
+        "source_file"
+      ],
+      "properties": {
+        "company": {
+          "type": "string",
+          "description": "公司主体或法定全称。"
+        },
+        "company_name": {
+          "type": "string",
+          "description": "用于封面和文件命名的公司展示名称。"
+        },
+        "stock_code": {
+          "type": "string"
+        },
+        "industry": {
+          "type": "string"
+        },
+        "report_title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "report_date": {
+          "type": "string",
+          "description": "推荐使用 YYYY-MM-DD；无法确定时可为空字符串。"
+        },
+        "source_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "type",
+        "title"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^src_[A-Za-z0-9_.-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "annual_report",
+            "quarterly_report",
+            "company_announcement",
+            "broker_report",
+            "database",
+            "website",
+            "calculation",
+            "user_input",
+            "other"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "publisher": {
+          "type": "string"
+        },
+        "published_date": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "file_name": {
+          "type": "string"
+        },
+        "locator": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^src_[A-Za-z0-9_.-]+$"
+      },
+      "uniqueItems": true
+    },
+    "evidence_ref": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["block", "table", "figure"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "visual_candidate": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "type",
+        "description",
+        "source_refs"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^visual_[A-Za-z0-9_.-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "chart",
+            "table"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "$ref": "#/$defs/source_refs"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "description": "直接支持该候选视觉的原生 block/table 证据；新生成的大纲应提供。",
+          "items": {
+            "$ref": "#/$defs/evidence_ref"
+          },
+          "uniqueItems": true
+        },
+        "values": false,
+        "categories": false,
+        "series": false,
+        "columns": false,
+        "rows": false
+      },
+      "additionalProperties": true
+    },
+    "slide": {
+      "type": "object",
+      "required": [
+        "slide_id",
+        "page_role",
+        "slide_type",
+        "title",
+        "key_message",
+        "bullet_points",
+        "source_refs",
+        "visual_candidates"
+      ],
+      "properties": {
+        "slide_id": {
+          "type": "string",
+          "pattern": "^slide_[A-Za-z0-9_.-]+$"
+        },
+        "page_role": {
+          "type": "string",
+          "description": "页面在整份报告中的结构角色。",
+          "enum": [
+            "title",
+            "section",
+            "content",
+            "closing"
+          ]
+        },
+        "slide_type": {
+          "type": "string",
+          "description": "页面主要讨论的业务主题。",
+          "enum": [
+            "company_overview",
+            "industry_analysis",
+            "business_model",
+            "core_competitiveness",
+            "financial_forecast",
+            "valuation_analysis",
+            "investment_risk",
+            "figure_page",
+            "summary"
+          ]
+        },
+        "section": {
+          "type": "string",
+          "description": "页面所属研报章节。"
+        },
+        "section_ref": {
+          "type": "string",
+          "description": "可选的 DocumentBundle section ID；新生成的 section/content 页面应提供。",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key_message": {
+          "type": "string",
+          "description": "本页希望传达的单一核心观点。",
+          "minLength": 1
+        },
+        "bullet_points": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source_refs": {
+          "$ref": "#/$defs/source_refs"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "description": "可选的 DocumentBundle 原生 block/table/figure 证据引用。",
+          "items": {
+            "$ref": "#/$defs/evidence_ref"
+          },
+          "uniqueItems": true
+        },
+        "layout_hint": {
+          "type": "string",
+          "description": "非强制布局建议；不对应具体模板 layout_id，最终模板选择由 T2.5 决定。",
+          "minLength": 1
+        },
+        "visual_candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/visual_candidate"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "slide_type": {
+                "const": "figure_page"
+              }
+            },
+            "required": [
+              "slide_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "evidence_refs"
+            ],
+            "properties": {
+              "page_role": {
+                "const": "content"
+              },
+              "bullet_points": {
+                "maxItems": 0
+              },
+              "evidence_refs": {
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "figure"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "visual_candidates": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}
