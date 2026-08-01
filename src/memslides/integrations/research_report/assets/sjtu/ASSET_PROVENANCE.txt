@@ -1,0 +1,8 @@
+Asset: sjtu-seal-white.png
+Source: user-provided official Shanghai Jiao Tong University PNG, C:\Users\周宇晨\Downloads\校徽.png
+Source SHA-256: 482706e0a39eb9a2c04417ca7632f87060639ae853706688b60642ba28f9bd29
+Operation: transparent crop only; no redraw, recoloring, or generative processing
+Source RGBA size: 4283 x 1408
+Source alpha bounding box: (201, 201, 4092, 1232)
+Crop box: (201, 201, 1232, 1232)
+Output SHA-256: f5f51274cc143694942d81f77b2b00e90558e34eea9739d208fa188c364a7610

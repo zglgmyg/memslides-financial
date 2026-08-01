@@ -70,4 +70,6 @@ memslides = [
   "research_pipeline/prompts/outline_cases/*.json",
   "research_pipeline/prompts/outline_cases/cases/*/*.json",
   "research_pipeline/schemas/*.json",
+  "integrations/research_report/assets/sjtu/*.png",
+  "integrations/research_report/assets/sjtu/*.txt",
 ]
