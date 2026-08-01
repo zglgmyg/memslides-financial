@@ -239,6 +239,30 @@ outline, visualization manifest, and numeric audit into a MemSlides manuscript
 and verified asset manifest. See
 [docs/financial-integration.md](docs/financial-integration.md).
 
+### Optional SJTU PPTX branding
+
+After the normal financial-report pipeline has produced a PPTX, apply the
+built-in Shanghai Jiao Tong University treatment to a separate output file:
+
+```bash
+python -m memslides.integrations.research_report.pptx_brand_postprocess \
+  --input .memslides/financial-deck/manuscript.pptx \
+  --output .memslides/financial-deck/manuscript.sjtu.pptx
+```
+
+This standalone postprocessor preserves the DeckDesigner plan, slide structure,
+body layout, existing text, and existing images. It replaces eligible legacy
+accent colors with SJTU red (`#A62038`), light gray (`#BFBFBF`), and champagne
+(`#E0CFBD`), then places the packaged white SJTU seal in the upper-right corner
+of detected content-page title bars. It does not use content memory and does not
+change the financial generation flow.
+
+Pass `--outline path/to/slide_outline.json` to require every content page
+declared by the outline to have an existing title bar. Pass
+`--logo path/to/seal.png` only to override the packaged asset; the override is
+used as-is and should be a transparent square PNG. The input and output paths
+must be different so the original generated deck remains unchanged.
+
 ## Security And Privacy
 
 - Keep API keys in environment variables, `.env`, or private YAML files.
