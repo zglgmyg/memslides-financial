@@ -1,0 +1,6 @@
+Asset: sjtu-solid-red-background.png
+Source: user-provided SJTU background PNG from the Codex clipboard attachment
+Source SHA-256: ae9587bb05a1d9ff6d2ba7d68d0ebedf526965aa8294d62eda8710c648f474c1
+Operation: copied without cropping, resizing, redraw, recoloring, or generative processing
+Source and output size: 1120 x 630 (16:9)
+Output SHA-256: ae9587bb05a1d9ff6d2ba7d68d0ebedf526965aa8294d62eda8710c648f474c1

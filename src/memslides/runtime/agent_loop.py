@@ -3657,14 +3657,6 @@ class AgentLoop(_AgentLoopRuntimeBindings):
         )
         return True
 
-    async def _run_generation_impl(
-        self,
-        request: InputRequest,
-        check_llms: bool = False,
-    ) -> AsyncGenerator[str | ChatMessage, None]:
-        async for item in self.run(request, check_llms=check_llms):
-            yield item
-
     @timer("MemSlides Loop")
     async def run(
         self,

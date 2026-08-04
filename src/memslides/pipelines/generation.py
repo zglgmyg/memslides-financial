@@ -1888,6 +1888,25 @@ async def run_generation_flow(
             slide_html_dir = resolved_slide_html_dir
             self.intermediate_output["slide_html_dir"] = str(slide_html_dir)
             self.save_results()
+            _extra_info = request.extra_info or {}
+            if (
+                _extra_info.get("financial_artifacts_read_only") is True
+                and _extra_info.get("sjtu_html_branding") is True
+            ):
+                from memslides.integrations.research_report.html_brand_postprocess import (
+                    apply_sjtu_brand_to_html,
+                )
+
+                _brand_report = apply_sjtu_brand_to_html(
+                    slide_html_dir,
+                    list(_extra_info.get("financial_page_roles") or []),
+                )
+                _brand_report_path = self.workspace / "sjtu_html_brand_report.json"
+                _brand_report_path.write_text(
+                    json.dumps(_brand_report, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                self.intermediate_output["sjtu_html_brand_report"] = str(_brand_report_path)
             pptx_path = self.workspace / f"{md_file.stem}.pptx"
             slide_html_dir, export_html_files = await self._export_slides_with_agent_repair(
                 slide_html_dir,

@@ -42,6 +42,10 @@ def _outline(tmp_path: Path, *, slides: list[dict] | None = None) -> Path:
             ],
         },
     )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for page_number, slide in enumerate(payload["slides"], start=1):
+        slide.setdefault("page_role", "title" if page_number == 1 else "content")
+    _dump(path, payload)
     return path
 
 
@@ -214,6 +218,8 @@ def test_adapts_audited_chart_and_table_to_memslides_inputs(tmp_path: Path) -> N
     assert table_calls[0]["columns"] == ["业务", "收入", "占比", "占比（2）"]
 
     manuscript = result.manuscript.read_text(encoding="utf-8")
+    assert "<!-- research-report page_role=title -->" in manuscript
+    assert "<!-- research-report page_role=content -->" in manuscript
     assert "# 收入趋势" in manuscript
     assert "![2023–2024 年收入](generated_visuals/slide_001__visual_001.svg)" in manuscript
     assert "Evidence: block:block-001, table:table-001" in manuscript
@@ -320,3 +326,28 @@ def test_copies_source_image_without_numeric_audit(tmp_path: Path) -> None:
     assert copied.read_bytes() == b"verified-image"
     asset_manifest = json.loads(result.asset_manifest.read_text(encoding="utf-8"))
     assert asset_manifest["assets"][0]["verification"]["numeric_audit_status"] == "not_applicable"
+
+
+def test_rejects_outline_without_title_role_on_first_page(tmp_path: Path) -> None:
+    outline = _outline(
+        tmp_path,
+        slides=[
+            {
+                "slide_id": "slide_001",
+                "title": "Not a cover",
+                "page_role": "content",
+            }
+        ],
+    )
+    manifest = _manifest(tmp_path, outline, bindings=[])
+    audit = _audit(tmp_path, visualizations=[])
+
+    with pytest.raises(ResearchReportAdapterError, match="page_role=title"):
+        adapt_research_report(
+            outline_path=outline,
+            visualization_manifest_path=manifest,
+            numeric_audit_path=audit,
+            output_dir=tmp_path / "workspace",
+            chart_renderer=_fake_renderer("chart", []),
+            table_renderer=_fake_renderer("table", []),
+        )

@@ -111,7 +111,9 @@ python -m memslides.integrations.research_report.generate \
   --visualization-manifest .memslides/research-run/visualizations/visualization_manifest.json \
   --numeric-audit .memslides/research-run/numeric_audit.json \
   --template /path/to/school-template.pptx \
-  --output-dir .memslides/financial-deck
+  --output-dir .memslides/financial-deck \
+  --generation-timeout 3600 \
+  --sjtu-branding
 ```
 
 `--template` is optional. When supplied, the existing MemSlides template
@@ -121,6 +123,28 @@ Template semantic analysis resolves `template_analyze` through the same model
 routing used by ordinary report generation even though financial generation
 keeps content memory disabled. This enables narrative, section, and bullet-style
 analysis without reading or writing historical memory.
+
+`--generation-timeout` limits the complete DeckDesigner session in seconds and
+defaults to 3600. A timeout fails the financial run explicitly instead of
+leaving an indefinitely suspended process. `--sjtu-branding` is also optional;
+when omitted, the normal financial HTML and export flow is unchanged.
+
+When SJTU branding is enabled, the financial-only HTML postprocessor runs after
+DeckDesigner has completed the slide HTML and before the first PPTX/PDF export.
+It applies the packaged SJTU colors and artwork, adds the complete white SJTU
+logo to content pages, and writes `sjtu_html_brand_report.json`. No additional
+PPTX postprocessor or second PPTX export is required.
+
+HTML rendering and PPTX/PDF export require Playwright Chromium. On Windows, a
+normal Playwright installation is usually stored below
+`$env:LOCALAPPDATA\ms-playwright`. If an explicit browser directory is needed,
+point `MEMSLIDES_PLAYWRIGHT_BROWSERS_PATH` there; do not point it at an empty
+project-local `.playwright-browsers` directory. For example:
+
+```powershell
+$env:MEMSLIDES_PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LOCALAPPDATA "ms-playwright"
+$env:PLAYWRIGHT_BROWSERS_PATH = $env:MEMSLIDES_PLAYWRIGHT_BROWSERS_PATH
+```
 
 This command bypasses the Researcher LLM, feeds the prebuilt manuscript to the
 native DeckDesigner, then runs the normal HTML repair and PPTX/PDF export. It

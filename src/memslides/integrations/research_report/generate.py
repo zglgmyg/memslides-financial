@@ -18,6 +18,24 @@ class FinancialGenerationError(RuntimeError):
     """Raised when the audited handoff or generated deck fails validation."""
 
 
+DEFAULT_GENERATION_TIMEOUT_SECONDS = 3600.0
+_FINANCIAL_PALETTE = {
+    "1E3A5F",
+    "2563EB",
+    "1E40AF",
+    "D97706",
+    "F59E0B",
+    "CBD5E1",
+    "DBEAFE",
+    "93C5FD",
+    "F8FAFC",
+    "FFFFFF",
+    "0F172A",
+    "475569",
+}
+_SJTU_PALETTE = {"A62038", "BFBFBF", "E0CFBD"}
+
+
 @dataclass(frozen=True)
 class FinancialGenerationResult:
     workspace: Path
@@ -95,7 +113,149 @@ def _assert_unchanged(before: dict[str, str]) -> None:
         )
 
 
-def _validate_slide_html_dir(slide_html_dir: Path, expected_count: int) -> None:
+def _outline_page_roles(outline_path: Path, expected_count: int) -> list[str]:
+    outline = _read_object(outline_path, "slide_outline.json")
+    slides = outline.get("slides")
+    if not isinstance(slides, list) or len(slides) != expected_count:
+        raise FinancialGenerationError(
+            "slide_outline.json page count does not match the audited handoff."
+        )
+    roles = [
+        str(slide.get("page_role", "") or "").strip().lower()
+        if isinstance(slide, dict)
+        else ""
+        for slide in slides
+    ]
+    invalid = [
+        str(index)
+        for index, role in enumerate(roles, start=1)
+        if role not in {"title", "content", "closing"}
+    ]
+    if invalid:
+        raise FinancialGenerationError(
+            "Financial outline pages must declare title/content/closing page_role; "
+            "invalid pages=" + ",".join(invalid)
+        )
+    if roles[0] != "title":
+        raise FinancialGenerationError(
+            "The first financial outline slide must declare page_role=title."
+        )
+    return roles
+
+
+def _financial_design_guidance(page_roles: list[str]) -> str:
+    role_map = "\n".join(
+        f"- Page {page_number}: `page_role={role}`"
+        for page_number, role in enumerate(page_roles, start=1)
+    )
+    return f"""Mandatory financial design constraints:
+
+1. Preserve the audited manuscript's exact page order, titles, claims, values, and
+   bound visual assets. Change presentation design only.
+2. Preserve this page-role map exactly:
+{role_map}
+3. Every HTML body must declare its exact role with
+   `data-page-role="title|content|closing"`. Title and closing pages must use distinct
+   compositions and must not contain an element marked
+   `data-financial-role="content-title-bar"`. A content-page title bar is optional.
+4. Use only this exact source palette in slide HTML:
+   primary=#1E3A5F, data_primary=#2563EB, data_dark=#1E40AF,
+   accent=#D97706, accent_light=#F59E0B, border=#CBD5E1,
+   tint=#DBEAFE, tint_strong=#93C5FD, background=#F8FAFC,
+   surface=#FFFFFF, primary_text=#0F172A, muted_text=#475569,
+   inverse_text=#FFFFFF.
+   Do not invent substitute hex colors. Black/white alpha values may be used only for
+   shadows or subtle overlays.
+5. Freely design each page's composition, hierarchy, spacing, components, title
+   placement, and visual structure within those content, role, and palette constraints.
+   Create and refine `design_plan.md` using the normal MemSlides workflow."""
+
+
+def _validate_financial_html_contract(
+    slide_html_dir: Path,
+    page_roles: list[str],
+    *,
+    sjtu_branding: bool = False,
+) -> None:
+    violations: list[str] = []
+    color_pattern = re.compile(r"#([0-9a-fA-F]{6})(?![0-9a-fA-F])")
+    for page_number, expected_role in enumerate(page_roles, start=1):
+        name = f"slide_{page_number:02d}.html"
+        path = slide_html_dir / name
+        if not path.is_file():
+            continue
+        html = path.read_text(encoding="utf-8", errors="replace")
+        body_match = re.search(r"<body\b(?P<attrs>[^>]*)>", html, flags=re.I | re.S)
+        body_attrs = body_match.group("attrs") if body_match else ""
+        role_match = re.search(
+            r"\bdata-page-role\s*=\s*(['\"])(?P<role>[^'\"]+)\1",
+            body_attrs,
+            flags=re.I,
+        )
+        actual_role = role_match.group("role").strip().lower() if role_match else ""
+        if actual_role != expected_role:
+            violations.append(
+                f"{name}: data-page-role={actual_role or '<missing>'}, expected={expected_role}"
+            )
+
+        title_bars = list(
+            re.finditer(
+                r"<(?P<tag>[a-z][a-z0-9:-]*)\b(?P<attrs>[^>]*\bdata-financial-role\s*=\s*"
+                r"(['\"])content-title-bar\3[^>]*)>",
+                html,
+                flags=re.I | re.S,
+            )
+        )
+        if expected_role == "content" and sjtu_branding:
+            body_style_match = re.search(
+                r"\bstyle\s*=\s*(['\"])(?P<style>.*?)\1",
+                body_attrs,
+                flags=re.I | re.S,
+            )
+            body_style = body_style_match.group("style") if body_style_match else ""
+            body_background_match = re.search(
+                r"(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)",
+                body_style,
+                flags=re.I,
+            )
+            body_background = (
+                body_background_match.group(1).strip() if body_background_match else ""
+            )
+            if not re.fullmatch(
+                r"#f8fafc(?:\s*!important)?",
+                body_background,
+                flags=re.I,
+            ):
+                violations.append(
+                    f"{name}: SJTU HTML branding must leave a solid #F8FAFC content canvas"
+                )
+        elif expected_role in {"title", "closing"} and title_bars:
+            violations.append(f"{name}: {expected_role} page must not use a content title bar")
+
+        allowed_palette = _FINANCIAL_PALETTE | (_SJTU_PALETTE if sjtu_branding else set())
+        unexpected_colors = sorted(
+            {match.group(1).upper() for match in color_pattern.finditer(html)}
+            - allowed_palette
+        )
+        if unexpected_colors:
+            violations.append(
+                f"{name}: colors outside financial palette="
+                + ",".join(f"#{color}" for color in unexpected_colors)
+            )
+
+    if violations:
+        raise FinancialGenerationError(
+            "DeckDesigner violated the financial HTML contract: " + "; ".join(violations)
+        )
+
+
+def _validate_slide_html_dir(
+    slide_html_dir: Path,
+    expected_count: int,
+    *,
+    page_roles: list[str] | None = None,
+    sjtu_branding: bool = False,
+) -> None:
     """Reject partial DeckDesigner output before issuing a success receipt."""
 
     missing: list[str] = []
@@ -132,6 +292,29 @@ def _validate_slide_html_dir(slide_html_dir: Path, expected_count: int) -> None:
         raise FinancialGenerationError(
             "DeckDesigner produced an incomplete slide HTML set: " + "; ".join(details)
         )
+    if page_roles is not None:
+        _validate_financial_html_contract(
+            slide_html_dir,
+            page_roles,
+            sjtu_branding=sjtu_branding,
+        )
+
+
+async def _generate_with_timeout(
+    session: Any,
+    request: Any,
+    timeout_seconds: float,
+) -> Any:
+    try:
+        return await asyncio.wait_for(
+            session.generate(request),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise FinancialGenerationError(
+            "DeckDesigner generation exceeded the financial timeout "
+            f"of {timeout_seconds:g} seconds."
+        ) from exc
 
 
 async def generate_financial_deck(
@@ -143,6 +326,8 @@ async def generate_financial_deck(
     config_path: str | Path | None = None,
     template_path: str | Path | None = None,
     instruction: str = "",
+    generation_timeout: float = DEFAULT_GENERATION_TIMEOUT_SECONDS,
+    sjtu_branding: bool = False,
 ) -> FinancialGenerationResult:
     """Run audited adaptation, DeckDesigner, repair, and PPTX/PDF export."""
 
@@ -168,6 +353,9 @@ async def generate_financial_deck(
     if not isinstance(summary, dict) or int(summary.get("slide_count", 0) or 0) < 1:
         raise FinancialGenerationError("Financial evidence handoff has no slides.")
     slide_count = int(summary["slide_count"])
+    if generation_timeout <= 0:
+        raise FinancialGenerationError("generation_timeout must be greater than zero.")
+    page_roles = _outline_page_roles(Path(outline_path).expanduser().resolve(), slide_count)
 
     protected_hashes = _snapshot(_protected_files(adaptation))
 
@@ -182,6 +370,7 @@ async def generate_financial_deck(
         "Use every verified chart/table on its bound slide. Change presentation design only; "
         "do not add, remove, recalculate, redraw, or reinterpret financial evidence."
     )
+    design_instruction = design_instruction + "\n\n" + _financial_design_guidance(page_roles)
     options = SessionOptions(
         config_file=Path(config_path).resolve() if config_path else None,
         workspace=workspace,
@@ -200,13 +389,19 @@ async def generate_financial_deck(
             "prebuilt_asset_manifest": str(adaptation.asset_manifest),
             "financial_evidence_manifest": str(adaptation.evidence_manifest),
             "financial_artifacts_read_only": True,
+            "financial_page_roles": page_roles,
+            "sjtu_html_branding": sjtu_branding,
         },
     )
 
     session = MemSlidesSession(options=options)
     try:
         try:
-            deck_result = await session.generate(request)
+            deck_result = await _generate_with_timeout(
+                session,
+                request,
+                generation_timeout,
+            )
         finally:
             _assert_unchanged(protected_hashes)
     finally:
@@ -220,7 +415,12 @@ async def generate_financial_deck(
         raise FinancialGenerationError("MemSlides did not produce a PPTX file.")
     if slide_html_dir is None or not slide_html_dir.is_dir():
         raise FinancialGenerationError("MemSlides did not produce a slide HTML directory.")
-    _validate_slide_html_dir(slide_html_dir, slide_count)
+    _validate_slide_html_dir(
+        slide_html_dir,
+        slide_count,
+        page_roles=page_roles,
+        sjtu_branding=sjtu_branding,
+    )
     pdf_path = Path(deck_result.pdf_path).resolve() if deck_result.pdf_path else None
     if pdf_path is not None and not pdf_path.is_file():
         pdf_path = None
@@ -237,6 +437,11 @@ async def generate_financial_deck(
                     "slide_html_dir": str(slide_html_dir),
                     "pptx": str(pptx_path),
                     "pdf": str(pdf_path) if pdf_path else "",
+                    "sjtu_html_brand_report": (
+                        str(workspace / "sjtu_html_brand_report.json")
+                        if sjtu_branding
+                        else ""
+                    ),
                 },
                 "integrity": {
                     "status": "passed",
@@ -273,6 +478,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="Optional MemSlides YAML config")
     parser.add_argument("--template", type=Path, help="Optional PPTX design template")
     parser.add_argument("--instruction", default="", help="Optional design-only instruction")
+    parser.add_argument(
+        "--generation-timeout",
+        type=float,
+        default=DEFAULT_GENERATION_TIMEOUT_SECONDS,
+        help="Total DeckDesigner timeout in seconds (default: 3600)",
+    )
+    parser.add_argument(
+        "--sjtu-branding",
+        action="store_true",
+        help="Apply optional SJTU colors and seal to financial HTML before export",
+    )
     return parser
 
 
@@ -287,6 +503,8 @@ def main() -> int:
             config_path=args.config,
             template_path=args.template,
             instruction=args.instruction,
+            generation_timeout=args.generation_timeout,
+            sjtu_branding=args.sjtu_branding,
         )
     )
     print(

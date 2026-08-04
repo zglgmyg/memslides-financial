@@ -334,9 +334,17 @@ def _manuscript(
     workspace: Path,
 ) -> str:
     pages: list[str] = []
-    for slide in slides:
+    for page_number, slide in enumerate(slides, start=1):
         slide_id = str(slide["slide_id"])
-        lines = [f"# {slide['title']}"]
+        page_role = str(slide.get("page_role", "") or "").strip().lower()
+        if page_number == 1 and page_role != "title":
+            raise ResearchReportAdapterError(
+                "The first financial outline slide must declare page_role=title."
+            )
+        lines = [
+            f"<!-- research-report page_role={page_role} -->",
+            f"# {slide['title']}",
+        ]
         key_message = str(slide.get("key_message", "") or "").strip()
         if key_message:
             lines.extend(["", key_message])
