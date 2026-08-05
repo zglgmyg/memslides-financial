@@ -1720,8 +1720,8 @@ def _table_layout_model(
     width: int,
     theme: dict[str, Any],
 ) -> dict[str, Any]:
-    body_size = max(12, int(theme.get("body_size") or 16))
-    caption_size = max(11, int(theme.get("caption_size") or 13))
+    body_size = max(18, int(theme.get("body_size") or 18))
+    caption_size = max(13, int(theme.get("caption_size") or 13))
     table_width = max(520, int(width or 960))
     numeric_columns = {column for column in columns if _is_numeric_column(rows, column)}
     column_widths = _estimate_column_widths(columns, rows, table_width - 56, body_size)
@@ -2029,6 +2029,8 @@ def _build_table_svg_markup(
         "column_widths": [round(value, 2) for value in col_widths],
         "row_heights": row_heights,
         "header_height": header_height,
+        "body_size": body_size,
+        "caption_size": caption_size,
         "wrapped_cells": {
             column: max((len(row[column]) for row in wrapped_rows), default=1)
             for column in columns
@@ -2050,7 +2052,7 @@ def render_table_asset_impl(
     caption: str = "",
     footnote: str = "",
     output_mode: str = "html",
-    width: int = 960,
+    width: int = 1120,
     output_stem: str = "",
     style_overrides: dict[str, Any] | None = None,
     workspace: str | Path | None = None,

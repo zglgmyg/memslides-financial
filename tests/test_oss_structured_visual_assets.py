@@ -29,7 +29,8 @@ def test_table_asset_emits_svg_metadata_and_cjk_raster_hints(tmp_path: Path, mon
     assert result["contains_cjk"] is True
     assert result["visual_type"] == "table"
     assert result["preferred_pptx_export"] == "raster"
-    assert result["recommended_width"] == 960
+    assert result["recommended_width"] == 1120
+    assert result["layout"]["body_size"] >= 18
     assert result["recommended_height"] > 120
     assert result["layout"]["wrapped_cells"]["指标"] >= 1
     assert result["rendered_paths"]["svg"].endswith(".svg")

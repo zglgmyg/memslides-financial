@@ -673,6 +673,66 @@ function addSvgBasic(slide, pptx, element, pos) {
   });
 }
 
+function boxOverlapRatio(left, right) {
+  const ax2 = Number(left?.x || 0) + Number(left?.width || 0);
+  const ay2 = Number(left?.y || 0) + Number(left?.height || 0);
+  const bx2 = Number(right?.x || 0) + Number(right?.width || 0);
+  const by2 = Number(right?.y || 0) + Number(right?.height || 0);
+  const width = Math.max(0, Math.min(ax2, bx2) - Math.max(Number(left?.x || 0), Number(right?.x || 0)));
+  const height = Math.max(0, Math.min(ay2, by2) - Math.max(Number(left?.y || 0), Number(right?.y || 0)));
+  const intersection = width * height;
+  const smaller = Math.min(
+    Math.max(0, Number(left?.width || 0) * Number(left?.height || 0)),
+    Math.max(0, Number(right?.width || 0) * Number(right?.height || 0)),
+  );
+  return smaller > 0 ? intersection / smaller : 0;
+}
+
+function normalizedText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function textElementScore(element) {
+  const runs = Array.isArray(element?.runs) ? element.runs.length : 0;
+  const tag = String(element?.tag || "").toLowerCase();
+  const semanticBonus = ["p", "li", "h1", "h2", "h3", "h4", "h5", "h6"].includes(tag) ? 3 : 0;
+  return runs * 10 + semanticBonus + normalizedText(element?.text).length / 1000;
+}
+
+function dedupeOverlappingTextElements(elements, warnings) {
+  const sorted = sortedElements(elements);
+  const kept = [];
+  for (const element of sorted) {
+    if (element.kind !== "text") {
+      kept.push(element);
+      continue;
+    }
+    const text = normalizedText(element.text);
+    const duplicateIndex = kept.findIndex((candidate) => {
+      if (candidate.kind !== "text" || boxOverlapRatio(candidate.box, element.box) < 0.9) {
+        return false;
+      }
+      const other = normalizedText(candidate.text);
+      return Boolean(text && other && (text === other || text.includes(other) || other.includes(text)));
+    });
+    if (duplicateIndex < 0) {
+      kept.push(element);
+      continue;
+    }
+    const previous = kept[duplicateIndex];
+    const preferred = textElementScore(element) > textElementScore(previous) ? element : previous;
+    kept[duplicateIndex] = preferred;
+    warnings.push({
+      severity: "warning",
+      code: "overlapping_text_deduplicated",
+      message: "Removed a duplicate parent/child text box with the same rendered area.",
+      source: "memslides_presentation_export",
+      removed_text: normalizedText(preferred === element ? previous.text : element.text).slice(0, 120),
+    });
+  }
+  return kept;
+}
+
 function addSlideFromDom(pptx, slideData) {
   const slide = pptx.addSlide();
   const scale = scaleForSlide(slideData);
@@ -690,7 +750,8 @@ function addSlideFromDom(pptx, slideData) {
     });
   }
 
-  for (const element of sortedElements(slideData.elements)) {
+  const exportElements = dedupeOverlappingTextElements(slideData.elements, runtimeWarnings);
+  for (const element of exportElements) {
     const withFile = { ...element, htmlFile: slideData.htmlFile };
     const pos = positionFromBox(element.box, scale.x, scale.y);
     try {

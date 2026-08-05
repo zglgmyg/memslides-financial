@@ -368,6 +368,8 @@ async def generate_financial_deck(
         "Create a professional Chinese financial research presentation from the supplied "
         "read-only manuscript. Preserve its exact page order, titles, claims, and values. "
         "Use every verified chart/table on its bound slide. Change presentation design only; "
+        "Verified tables must occupy at least 70% of the slide width and should normally use a full-width layout. "
+        "Never place a table with more than four columns or six rows in a half-width side column; put the takeaway above or below it. "
         "do not add, remove, recalculate, redraw, or reinterpret financial evidence."
     )
     design_instruction = design_instruction + "\n\n" + _financial_design_guidance(page_roles)

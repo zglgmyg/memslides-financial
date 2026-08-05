@@ -650,7 +650,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
               }
               if (node.tagName === "BR") {
                 pieces.push("\n");
-              } else if (inlineTags.has(node.tagName) || !node.querySelector(BLOCK_CHILD_SELECTOR)) {
+              } else if (inlineTags.has(node.tagName)) {
                 pieces.push(node.innerText || node.textContent || "");
               }
             }
@@ -671,7 +671,14 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
           }
           if (INLINE_TEXT_TAGS.has(tag)) {
             const parentBlock = element.parentElement?.closest("p,h1,h2,h3,h4,h5,h6,li,td,th,button,label,figcaption,blockquote,pre");
-            return parentBlock ? "" : (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+            if (parentBlock) {
+              return "";
+            }
+            const parentDiv = element.parentElement?.closest("div");
+            if (parentDiv && !parentDiv.querySelector(BLOCK_CHILD_SELECTOR)) {
+              return "";
+            }
+            return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
           }
           if (tag === "DIV") {
             if (element.querySelector(BLOCK_CHILD_SELECTOR)) {
