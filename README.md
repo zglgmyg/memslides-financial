@@ -234,31 +234,117 @@ python -m memslides template induct --template-file template.pptx
 
 ## Financial Research Integration
 
-The fork includes a fail-closed adapter that converts an audited research-report
-outline, visualization manifest, and numeric audit into a MemSlides manuscript
-and verified asset manifest. See
-[docs/financial-integration.md](docs/financial-integration.md).
+The financial path is a separate, fail-closed workflow. A complete financial
+deck must include both verified references and SJTU branding. It never accepts,
+analyzes, or applies a PowerPoint template; do not pass `--template` to the
+financial generator. Ordinary template support remains available only to the
+ordinary MemSlides generation path.
 
-### Optional SJTU HTML branding
+The Markdown report and PDF must be two versions of the same report. The parsed
+Markdown JSON supplies block-level citation anchors, while MinerU extracts the
+source catalog from the matching PDF appendix. Set `DEEPSEEK_API_KEY` and
+`MINERU_API_TOKEN` before running the workflow.
 
-Financial generation can apply the Shanghai Jiao Tong University treatment to
-slide HTML before the first PPTX/PDF export. Enable it with `--sjtu-branding` on
-the complete financial generation command. The HTML postprocessor replaces
-eligible colors, keeps content-page canvases light, and inserts the packaged
-complete SJTU logo in the upper-right corner of every content page. For pages
-whose outline role is `title` or `closing`, it replaces an existing solid
-`#A62038` canvas with the packaged 16:9 SJTU background artwork. This is
-role-based rather than a physical first/last-slide rule: citation appendix pages
-added later are not treated as `closing` pages. Existing gradient, image,
-white, and light-gray backgrounds remain unchanged.
+### Complete financial workflow on PowerShell
+
+Define fresh output directories and the matching inputs:
+
+```powershell
+$Python = ".\.venv\Scripts\python.exe"
+$Markdown = "D:\path\to\report.md"
+$Pdf = "D:\path\to\report.pdf"
+$ParsedJson = "D:\path\to\report_parsed.json"
+$ResearchRun = ".memslides\research-runs\report-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$DeckRun = ".memslides\runs\report-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$Artifacts = "D:\path\to\report_citations"
+```
+
+Generate the audited outline, visualizations, and numeric audit from Markdown:
+
+```powershell
+& $Python -m memslides.research_pipeline.research_run `
+  $Markdown `
+  --output-dir $ResearchRun `
+  --candidate-mode active `
+  --max-attempts 3 `
+  --timeout 600
+```
+
+Parse the matching PDF appendix, build citation units, and validate Markdown
+citations against PDF sources:
+
+```powershell
+& $Python -c "from memslides.integrations.research_report.citation_appendix import parse_pdf_citation_appendix; print(parse_pdf_citation_appendix(r'''$Pdf''', r'''$Artifacts'''))"
+
+$SourceCatalog = Join-Path $Artifacts "citation_source_catalog.json"
+$CitationUnits = Join-Path $Artifacts "citation_units.json"
+$ValidationReport = Join-Path $Artifacts "citation_validation_report.json"
+
+& $Python -c "from memslides.integrations.research_report.citation_units import write_citation_units; print(write_citation_units(r'''$ParsedJson''', r'''$CitationUnits'''))"
+& $Python -c "from memslides.integrations.research_report.citation_validation import write_citation_validation_report; print(write_citation_validation_report(r'''$CitationUnits''', r'''$SourceCatalog''', r'''$ValidationReport'''))"
+```
+
+Review `citation_validation_report.json` before continuing. IDs in
+`source_missing` are excluded from later citation matching.
+
+Generate the financial HTML and baseline PPTX with mandatory SJTU branding.
+The financial generator deliberately has no `--template` argument:
+
+```powershell
+$Outline = Join-Path $ResearchRun "slide_outline.json"
+$VisualizationManifest = Join-Path $ResearchRun "visualizations\visualization_manifest.json"
+$NumericAudit = Join-Path $ResearchRun "numeric_audit.json"
+
+& $Python -m memslides.integrations.research_report.generate `
+  --outline $Outline `
+  --visualization-manifest $VisualizationManifest `
+  --numeric-audit $NumericAudit `
+  --output-dir $DeckRun `
+  --generation-timeout 7200 `
+  --sjtu-branding
+```
+
+Run the required reference sidecar against the generated HTML:
+
+```powershell
+$HtmlDir = Join-Path $DeckRun "outputs"
+
+& $Python -m memslides.integrations.research_report.citation_sidecar `
+  --html-dir $HtmlDir `
+  --outline $Outline `
+  --citation-units $CitationUnits `
+  --validation-report $ValidationReport `
+  --source-catalog $SourceCatalog
+```
+
+The sidecar modifies HTML and appends the PDF-ordered reference appendix; it
+does not create a PPTX. Export the modified HTML again to produce the final
+referenced and SJTU-branded deck:
+
+```powershell
+$OutputPptx = Join-Path $DeckRun "financial-report-referenced-sjtu.pptx"
+
+& $Python -c "import asyncio; from pathlib import Path; from memslides.utils.webview import convert_html_to_pptx; asyncio.run(convert_html_to_pptx(Path(r'''$HtmlDir'''), Path(r'''$OutputPptx'''), '16:9'))"
+```
+
+The final deliverable is `$OutputPptx`. See
+[docs/financial-integration.md](docs/financial-integration.md) for the audited
+artifact contracts.
+
+### SJTU HTML branding details
+
+The required `--sjtu-branding` stage inserts the packaged complete SJTU logo in
+the upper-right corner of every content page. It replaces the background of
+outline `title` and `closing` pages with the packaged 16:9 SJTU artwork. It does
+not recolor content pages and does not analyze a PowerPoint template.
 
 The branding step inserts the background as a full-slide image in the HTML; it
 does not modify a native PowerPoint master or run after PPTX generation. The
 standalone citation sidecar described below also does not invoke branding.
 
-### Optional citation sidecar
+### Reference sidecar details
 
-The financial citation path is an additive sidecar that runs after DeckDesigner
+The required financial citation stage is an additive sidecar that runs after DeckDesigner
 has produced the final slide HTML. It does not change the outline prompt,
 `slide_outline.json`, content generation, or the normal HTML-to-PPTX exporter.
 It expects three precomputed citation artifacts:
