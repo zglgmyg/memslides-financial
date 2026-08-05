@@ -14,8 +14,8 @@ from memslides.integrations.research_report.generate import (
     _assert_unchanged,
     _generate_with_timeout,
     _financial_design_guidance,
+    _outline_page_roles,
     _parser,
-    _resolve_template_path,
     _snapshot,
     _validate_slide_html_dir,
 )
@@ -120,26 +120,6 @@ def test_insufficient_balance_is_not_retried() -> None:
     assert _is_non_retryable_llm_error(error) is True
 
 
-def test_template_path_accepts_pptx(tmp_path: Path) -> None:
-    template = tmp_path / "school.pptx"
-    template.write_bytes(b"pptx fixture")
-
-    assert _resolve_template_path(template) == template.resolve()
-
-
-def test_template_path_rejects_missing_file(tmp_path: Path) -> None:
-    with pytest.raises(FinancialGenerationError, match="does not exist"):
-        _resolve_template_path(tmp_path / "missing.pptx")
-
-
-def test_template_path_rejects_non_pptx(tmp_path: Path) -> None:
-    template = tmp_path / "school.ppt"
-    template.write_bytes(b"legacy fixture")
-
-    with pytest.raises(FinancialGenerationError, match="must be a .pptx"):
-        _resolve_template_path(template)
-
-
 def test_slide_html_validation_rejects_compacted_placeholder(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
         "<html><body><h1>Complete slide</h1></body></html>", encoding="utf-8"
@@ -188,26 +168,48 @@ def test_generation_timeout_cli_default_and_override() -> None:
     assert parser.parse_args(required + ["--sjtu-branding"]).sjtu_branding is True
 
 
-def test_financial_design_guidance_limits_palette_and_roles_not_layout() -> None:
+def test_financial_design_guidance_preserves_roles_without_fixing_layout() -> None:
     guidance = _financial_design_guidance(["title", "content", "closing"])
 
-    assert "primary=#1E3A5F" in guidance
     assert "Page 1: `page_role=title`" in guidance
     assert "Page 2: `page_role=content`" in guidance
     assert "Page 3: `page_role=closing`" in guidance
-    assert "A content-page title bar is optional" in guidance
+    assert 'data-financial-role="content-title-bar"' in guidance
+    assert "#1E3A5F" in guidance
     assert "Freely design each page's composition" in guidance
+    assert "Use only this exact source palette" in guidance
+    assert "span the full page width" in guidance
+    assert "no outer whitespace" in guidance
+    assert "data-page-role" not in guidance
     assert "top:0" not in guidance
 
 
-def test_financial_html_contract_allows_content_without_fixed_title_bar(tmp_path: Path) -> None:
+def test_outline_page_roles_rejects_section(tmp_path: Path) -> None:
+    outline = tmp_path / "slide_outline.json"
+    _dump(
+        outline,
+        {
+            "slides": [
+                {"page_role": "title"},
+                {"page_role": "section"},
+                {"page_role": "content"},
+                {"page_role": "closing"},
+            ]
+        },
+    )
+
+    with pytest.raises(FinancialGenerationError, match="invalid pages=2"):
+        _outline_page_roles(outline, 4)
+
+
+def test_financial_html_contract_accepts_marked_content_title_bar(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
         '<html><body data-page-role="title" style="background:#F8FAFC">Cover</body></html>',
         encoding="utf-8",
     )
     (tmp_path / "slide_02.html").write_text(
         """<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">
-        <section style="position:absolute;left:8%;top:12%;background:#FFFFFF;color:#0F172A">
+        <section data-financial-role="content-title-bar" style="position:absolute;left:8%;top:12%;background:#FFFFFF;color:#0F172A">
           Freely composed content
         </section><p style="color:#475569">Body</p></body></html>""",
         encoding="utf-8",
@@ -224,38 +226,25 @@ def test_financial_html_contract_allows_content_without_fixed_title_bar(tmp_path
     )
 
 
-def test_sjtu_html_contract_rejects_unprotected_content_canvas(tmp_path: Path) -> None:
+def test_financial_html_contract_rejects_missing_content_title_bar(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
         '<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">Body</body></html>',
         encoding="utf-8",
     )
 
-    with pytest.raises(FinancialGenerationError, match="SJTU HTML branding"):
+    with pytest.raises(FinancialGenerationError, match="title bar marker"):
         _validate_slide_html_dir(
             tmp_path,
             1,
             page_roles=["content"],
-            sjtu_branding=True,
         )
 
 
-def test_financial_html_contract_rejects_wrong_role_and_palette(tmp_path: Path) -> None:
+def test_financial_html_contract_rejects_wrong_role(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
         '<html><body data-page-role="content" style="background:#0EA5E9">Wrong</body></html>',
         encoding="utf-8",
     )
 
     with pytest.raises(FinancialGenerationError, match="financial HTML contract"):
-        _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
-
-
-def test_financial_html_contract_rejects_content_title_bar_on_cover(tmp_path: Path) -> None:
-    (tmp_path / "slide_01.html").write_text(
-        """<html><body data-page-role="title" style="background:#1E3A5F;color:#FFFFFF">
-        <div data-financial-role="content-title-bar" style="background:#1E3A5F">Wrong</div>
-        </body></html>""",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FinancialGenerationError, match="title page must not use"):
         _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])

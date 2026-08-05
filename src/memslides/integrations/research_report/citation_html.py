@@ -10,24 +10,6 @@ from .html_claims import find_html_claim_elements
 
 
 REFERENCE_COLOR = "#475569"
-_SOURCE_SELECTOR = (
-    "[data-citation-sources], .source-footer, .source-list, .sources, .references"
-)
-
-
-def _remove_source_container(soup: BeautifulSoup) -> None:
-    existing = soup.select_one(_SOURCE_SELECTOR)
-    if existing is None:
-        existing = next(
-            (
-                element
-                for element in reversed(soup.find_all(["div", "p", "footer"]))
-                if element.get_text(" ", strip=True).startswith(("来源：", "来源:"))
-            ),
-            None,
-        )
-    if existing is not None:
-        existing.decompose()
 
 
 def apply_citations_to_html(
@@ -35,12 +17,11 @@ def apply_citations_to_html(
     page_id: str,
     resolved_citations: Mapping[str, Any],
 ) -> str:
-    """Append PDF-numbered superscripts and remove the page source footer."""
+    """Append PDF-numbered superscripts to resolved claims."""
 
     soup = BeautifulSoup(html_text, "lxml")
     for existing_mark in soup.select("sup.reference-mark"):
         existing_mark.decompose()
-    _remove_source_container(soup)
     elements_by_id = {
         f"{page_id}_claim_{index:03d}": element
         for index, element in enumerate(find_html_claim_elements(soup), start=1)

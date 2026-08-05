@@ -12,6 +12,10 @@ class DeckDesigner(Agent):
     async def loop(self, req: InputRequest, markdown_file: str):
         (self.workspace / "slides").mkdir(exist_ok=True)
         _iter = 0
+        max_iterations = max(
+            MAX_AGENT_ITERATIONS,
+            int(req.extra_info.get("deck_designer_max_iterations", 0) or 0),
+        )
         outcome = None
         initial_progress_prompt = render_deck_progress_prompt(self.workspace)
         if initial_progress_prompt:
@@ -20,9 +24,9 @@ class DeckDesigner(Agent):
             )
         while True:
             _iter += 1
-            if _iter > MAX_AGENT_ITERATIONS:
+            if _iter > max_iterations:
                 warning(
-                    f"DeckDesigner.loop() exceeded max iterations ({MAX_AGENT_ITERATIONS})"
+                    f"DeckDesigner.loop() exceeded max iterations ({max_iterations})"
                 )
                 self.chat_history.append(
                     ChatMessage(role=Role.USER, content=FORCE_FINALIZE_MSG["text"])
