@@ -243,12 +243,72 @@ and verified asset manifest. See
 
 Financial generation can apply the Shanghai Jiao Tong University treatment to
 slide HTML before the first PPTX/PDF export. Enable it with `--sjtu-branding` on
-the financial generation command. The HTML postprocessor replaces eligible
-colors, keeps content-page canvases light, inserts the packaged complete SJTU
-logo in the upper-right corner of every content page, and replaces a solid-red
-title/closing canvas with the packaged 16:9 SJTU background artwork. Existing
-gradient, image, white, and light-gray backgrounds remain unchanged. No
-branding or logo replacement runs after PPTX generation.
+the complete financial generation command. The HTML postprocessor replaces
+eligible colors, keeps content-page canvases light, and inserts the packaged
+complete SJTU logo in the upper-right corner of every content page. For pages
+whose outline role is `title` or `closing`, it replaces an existing solid
+`#A62038` canvas with the packaged 16:9 SJTU background artwork. This is
+role-based rather than a physical first/last-slide rule: citation appendix pages
+added later are not treated as `closing` pages. Existing gradient, image,
+white, and light-gray backgrounds remain unchanged.
+
+The branding step inserts the background as a full-slide image in the HTML; it
+does not modify a native PowerPoint master or run after PPTX generation. The
+standalone citation sidecar described below also does not invoke branding.
+
+### Optional citation sidecar
+
+The financial citation path is an additive sidecar that runs after DeckDesigner
+has produced the final slide HTML. It does not change the outline prompt,
+`slide_outline.json`, content generation, or the normal HTML-to-PPTX exporter.
+It expects three precomputed citation artifacts:
+
+- `citation_source_catalog.json`, parsed from the matching PDF appendix with
+  MinerU in the appendix's original source order;
+- `citation_units.json`, built from citation markers in the parsed Markdown JSON;
+- `citation_validation_report.json`, which retains only citation IDs present in
+  both the Markdown-derived units and the PDF source catalog.
+
+For each slide, `evidence_refs` limits candidate citation units to the referenced
+blocks. The sidecar extracts visible claim nodes from the final HTML and asks
+DeepSeek only to map claim IDs to candidate unit IDs. It then resolves the unit
+IDs to source IDs deterministically. DeepSeek cannot create block IDs, citation
+IDs, dates, domains, URLs, or source numbers.
+
+Web-source descriptions are normalized once and cached next to the source
+catalog as `citation_reference_catalog.json`. DeepSeek may extract an explicit
+title or produce a grounded descriptive title such as `相关报道`; publisher and
+document-number fields must still occur verbatim in the PDF description. Dates
+and domains remain deterministic, and the code never constructs a URL from a
+domain. Non-web sources continue to use deterministic formatting.
+
+Run the sidecar against an existing final HTML directory:
+
+```bash
+python -m memslides.integrations.research_report.citation_sidecar \
+  --html-dir /path/to/deck/outputs \
+  --outline /path/to/slide_outline.json \
+  --citation-units /path/to/citation_units.json \
+  --validation-report /path/to/citation_validation_report.json \
+  --source-catalog /path/to/citation_source_catalog.json
+```
+
+The command requires `DEEPSEEK_API_KEY` and modifies the HTML files in place.
+It removes prior sidecar marks and appendix pages before rebuilding them, so the
+same HTML directory can be processed again. Source normalization is cached, but
+claim-to-unit matching is currently performed sequentially on every run and may
+take several minutes without intermediate console progress.
+
+Source numbers are global and follow the PDF appendix order. Body pages contain
+gray-black bracketed marks such as `[1]` and `[1,3]`; they do not contain a
+second source footer. All sources are listed after the existing deck in
+`附录` pages, with ten sources per page and the final page containing the
+remainder. The sidecar updates HTML only; run the normal HTML-to-PPTX export
+after it completes.
+
+The HTML marks use `<sup class="reference-mark">`, but the current structured
+PPTX exporter does not yet map that run to PowerPoint's native superscript
+property. Consequently, the exported baseline may differ from the HTML preview.
 
 ## Security And Privacy
 

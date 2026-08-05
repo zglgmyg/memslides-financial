@@ -13,6 +13,7 @@ workspace/
 /memory/
 outputs/
 cache/
+data/reports/agent/*_citations/
 .cache/
 .memory/
 .secrets/

@@ -39,6 +39,17 @@ def outline() -> dict[str, Any]:
         ],
         "slides": [
             {
+                "slide_id": "slide_000",
+                "page_role": "title",
+                "slide_type": "summary",
+                "title": "测试报告",
+                "key_message": "测试报告封面",
+                "bullet_points": [],
+                "source_refs": [],
+                "evidence_refs": [],
+                "visual_candidates": [],
+            },
+            {
                 "slide_id": "slide_001",
                 "page_role": "content",
                 "slide_type": "financial_forecast",
