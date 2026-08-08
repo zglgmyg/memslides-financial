@@ -122,19 +122,14 @@ python -m memslides.integrations.research_report.generate \
   --outline .memslides/research-run/slide_outline.json \
   --visualization-manifest .memslides/research-run/visualizations/visualization_manifest.json \
   --numeric-audit .memslides/research-run/numeric_audit.json \
-  --template /path/to/school-template.pptx \
   --output-dir .memslides/financial-deck \
   --generation-timeout 3600 \
   --sjtu-branding
 ```
 
-`--template` is optional. When supplied, the existing MemSlides template
-analysis and quality-selection flow uses the PPTX as a structural or style
-reference. Omitting it preserves the original model-designed generation flow.
-Template semantic analysis resolves `template_analyze` through the same model
-routing used by ordinary report generation even though financial generation
-keeps content memory disabled. This enables narrative, section, and bullet-style
-analysis without reading or writing historical memory.
+Financial generation does not accept or analyze a PPTX template. Its HTML is
+designed from the audited financial manuscript and financial design guidance;
+optional SJTU branding is applied only after HTML generation.
 
 `--generation-timeout` limits the complete DeckDesigner session in seconds and
 defaults to 3600. A timeout fails the financial run explicitly instead of

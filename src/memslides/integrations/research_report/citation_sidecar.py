@@ -103,7 +103,6 @@ def run_citation_sidecar(
         if (
             has_references
             or "reference-mark" in html_text
-            or "data-citation-sources" in html_text
         ):
             updated_pages[html_path] = apply_citations_to_html(
                 html_text,

@@ -20,21 +20,6 @@ class FinancialGenerationError(RuntimeError):
 
 
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 3600.0
-_FINANCIAL_PALETTE = {
-    "1E3A5F",
-    "2563EB",
-    "1E40AF",
-    "D97706",
-    "F59E0B",
-    "CBD5E1",
-    "DBEAFE",
-    "93C5FD",
-    "F8FAFC",
-    "FFFFFF",
-    "0F172A",
-    "475569",
-}
-_SJTU_PALETTE = {"A62038", "BFBFBF", "E0CFBD"}
 
 
 @dataclass(frozen=True)
@@ -65,17 +50,6 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise FinancialGenerationError(f"{label} must contain a JSON object: {path}")
     return payload
-
-
-def _resolve_template_path(template_path: str | Path | None) -> Path | None:
-    if template_path is None:
-        return None
-    resolved = Path(template_path).expanduser().resolve()
-    if not resolved.is_file():
-        raise FinancialGenerationError(f"Template PPTX does not exist: {resolved}")
-    if resolved.suffix.lower() != ".pptx":
-        raise FinancialGenerationError(f"Template must be a .pptx file: {resolved}")
-    return resolved
 
 
 def _protected_files(adaptation: AdaptationResult) -> list[Path]:
@@ -155,6 +129,7 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
    bound visual assets. Change presentation design only.
 2. Preserve this page-role map exactly:
 {role_map}
+<<<<<<< HEAD
 3. Every HTML body must declare its exact role with
    `data-page-role="title|content|closing"` and its immutable page identity with
    `data-slide-id="slide_XX"`, matching its filename and the corresponding manuscript
@@ -164,6 +139,13 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
    append a second version of its title, body, chart, or table.
    Title and closing pages must use distinct compositions and must not contain an
    element marked `data-financial-role="content-title-bar"`. A content-page title bar is optional.
+=======
+3. Every content page must place its visible page title in exactly one element marked
+   `data-financial-role="content-title-bar"`. The title bar must span the full page width,
+   sit flush against the top, left, and right page edges with no outer whitespace, use a
+   #1E3A5F blue background with white title text, and reserve its height before laying out
+   the page body below it.
+>>>>>>> df84e3ff34ff2888390624e781ced607f6d18a81
 4. Use only this exact source palette in slide HTML:
    primary=#1E3A5F, data_primary=#2563EB, data_dark=#1E40AF,
    accent=#D97706, accent_light=#F59E0B, border=#CBD5E1,
@@ -180,11 +162,8 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
 def _validate_financial_html_contract(
     slide_html_dir: Path,
     page_roles: list[str],
-    *,
-    sjtu_branding: bool = False,
 ) -> None:
     violations: list[str] = []
-    color_pattern = re.compile(r"#([0-9a-fA-F]{6})(?![0-9a-fA-F])")
     for page_number, expected_role in enumerate(page_roles, start=1):
         name = f"slide_{page_number:02d}.html"
         path = slide_html_dir / name
@@ -218,50 +197,12 @@ def _validate_financial_html_contract(
                 f"expected={expected_slide_id}"
             )
 
-        title_bars = list(
-            re.finditer(
-                r"<(?P<tag>[a-z][a-z0-9:-]*)\b(?P<attrs>[^>]*\bdata-financial-role\s*=\s*"
-                r"(['\"])content-title-bar\3[^>]*)>",
-                html,
-                flags=re.I | re.S,
-            )
-        )
-        if expected_role == "content" and sjtu_branding:
-            body_style_match = re.search(
-                r"\bstyle\s*=\s*(['\"])(?P<style>.*?)\1",
-                body_attrs,
-                flags=re.I | re.S,
-            )
-            body_style = body_style_match.group("style") if body_style_match else ""
-            body_background_match = re.search(
-                r"(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)",
-                body_style,
-                flags=re.I,
-            )
-            body_background = (
-                body_background_match.group(1).strip() if body_background_match else ""
-            )
-            if not re.fullmatch(
-                r"#f8fafc(?:\s*!important)?",
-                body_background,
-                flags=re.I,
-            ):
-                violations.append(
-                    f"{name}: SJTU HTML branding must leave a solid #F8FAFC content canvas"
-                )
-        elif expected_role in {"title", "closing"} and title_bars:
-            violations.append(f"{name}: {expected_role} page must not use a content title bar")
-
-        allowed_palette = _FINANCIAL_PALETTE | (_SJTU_PALETTE if sjtu_branding else set())
-        unexpected_colors = sorted(
-            {match.group(1).upper() for match in color_pattern.finditer(html)}
-            - allowed_palette
-        )
-        if unexpected_colors:
-            violations.append(
-                f"{name}: colors outside financial palette="
-                + ",".join(f"#{color}" for color in unexpected_colors)
-            )
+        if expected_role == "content" and not re.search(
+            r"\bdata-financial-role\s*=\s*(['\"])content-title-bar\1",
+            html,
+            flags=re.I,
+        ):
+            violations.append(f"{name}: content page is missing its title bar marker")
 
     if violations:
         raise FinancialGenerationError(
@@ -303,7 +244,6 @@ def _validate_slide_html_dir(
     expected_count: int,
     *,
     page_roles: list[str] | None = None,
-    sjtu_branding: bool = False,
 ) -> None:
     """Reject partial DeckDesigner output before issuing a success receipt."""
 
@@ -355,7 +295,6 @@ def _validate_slide_html_dir(
         _validate_financial_html_contract(
             slide_html_dir,
             page_roles,
-            sjtu_branding=sjtu_branding,
         )
 
 
@@ -383,14 +322,12 @@ async def generate_financial_deck(
     numeric_audit_path: str | Path,
     output_dir: str | Path,
     config_path: str | Path | None = None,
-    template_path: str | Path | None = None,
     instruction: str = "",
     generation_timeout: float = DEFAULT_GENERATION_TIMEOUT_SECONDS,
     sjtu_branding: bool = False,
 ) -> FinancialGenerationResult:
     """Run audited adaptation, DeckDesigner, repair, and PPTX/PDF export."""
 
-    resolved_template = _resolve_template_path(template_path)
     workspace = Path(output_dir).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     stale_pptx = list(workspace.glob("*.pptx"))
@@ -443,14 +380,13 @@ async def generate_financial_deck(
         instruction=design_instruction,
         num_pages=slide_count,
         language="zh",
-        template=resolved_template,
-        template_as_reference=resolved_template is not None,
         extra_info={
             "prebuilt_manuscript": str(adaptation.manuscript),
             "prebuilt_asset_manifest": str(adaptation.asset_manifest),
             "financial_evidence_manifest": str(adaptation.evidence_manifest),
             "financial_artifacts_read_only": True,
             "financial_page_roles": page_roles,
+            "deck_designer_max_iterations": slide_count * 10,
             "sjtu_html_branding": sjtu_branding,
         },
     )
@@ -480,7 +416,6 @@ async def generate_financial_deck(
         slide_html_dir,
         slide_count,
         page_roles=page_roles,
-        sjtu_branding=sjtu_branding,
     )
     pdf_path = Path(deck_result.pdf_path).resolve() if deck_result.pdf_path else None
     if pdf_path is not None and not pdf_path.is_file():
@@ -537,7 +472,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--numeric-audit", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--config", type=Path, help="Optional MemSlides YAML config")
-    parser.add_argument("--template", type=Path, help="Optional PPTX design template")
     parser.add_argument("--instruction", default="", help="Optional design-only instruction")
     parser.add_argument(
         "--generation-timeout",
@@ -562,7 +496,6 @@ def main() -> int:
             numeric_audit_path=args.numeric_audit,
             output_dir=args.output_dir,
             config_path=args.config,
-            template_path=args.template,
             instruction=args.instruction,
             generation_timeout=args.generation_timeout,
             sjtu_branding=args.sjtu_branding,

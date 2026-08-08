@@ -175,9 +175,14 @@ def canonicalize_outline_from_bundle(
             slide["section"] = canonical_title
             counts["labels"] += 1
         if (
+<<<<<<< HEAD
             preserve_source_titles
             and canonical_title
             and slide.get("page_role") in {"section", "content"}
+=======
+            canonical_title
+            and slide.get("page_role") == "content"
+>>>>>>> df84e3ff34ff2888390624e781ced607f6d18a81
             and slide.get("slide_type") != "figure_page"
             and str(slide.get("title") or "").strip() != canonical_title
         ):
@@ -413,8 +418,12 @@ def validate_outline_evidence(
                 ):
                     issues.append(Issue("error", "BUNDLE.SECTION_TITLE_MISMATCH", f"{base}.section", "slide section label must match the DocumentBundle heading"))
                 if (
+<<<<<<< HEAD
                     preserve_source_structure
                     and slide.get("page_role") in {"section", "content"}
+=======
+                    slide.get("page_role") == "content"
+>>>>>>> df84e3ff34ff2888390624e781ced607f6d18a81
                     and slide.get("slide_type") != "figure_page"
                     and canonical_title
                     and slide.get("title") is not None
@@ -425,7 +434,7 @@ def validate_outline_evidence(
                             "error",
                             "BUNDLE.SECTION_SLIDE_TITLE",
                             f"{base}.title",
-                            "section/content slide title must exactly match the DocumentBundle heading",
+                            "content slide title must exactly match the DocumentBundle heading",
                         )
                     )
 
@@ -523,7 +532,11 @@ def validate_outline_evidence(
             )
         if role == "content" and not refs:
             issues.append(Issue("error", "BUNDLE.CONTENT_WITHOUT_EVIDENCE", f"{base}.evidence_refs", "content slide must reference DocumentBundle evidence"))
+<<<<<<< HEAD
         if preserve_source_structure and role in {"content", "section"} and section_ref is None:
+=======
+        if role == "content" and section_ref is None:
+>>>>>>> df84e3ff34ff2888390624e781ced607f6d18a81
             issues.append(Issue("error", "BUNDLE.SLIDE_WITHOUT_SECTION", f"{base}.section_ref", f"{role} slide must reference an existing section"))
         if role == "content" and not slide.get("source_refs"):
             issues.append(Issue("error", "BUNDLE.CONTENT_WITHOUT_SOURCE", f"{base}.source_refs", "content slide must preserve source_refs"))

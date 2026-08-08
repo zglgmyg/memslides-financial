@@ -215,7 +215,6 @@
           "description": "页面在整份报告中的结构角色。",
           "enum": [
             "title",
-            "section",
             "content",
             "closing"
           ]
@@ -241,7 +240,7 @@
         },
         "section_ref": {
           "type": "string",
-          "description": "可选的 DocumentBundle section ID；新生成的 section/content 页面应提供。",
+          "description": "可选的 DocumentBundle section ID；新生成的 content 页面应提供。",
           "minLength": 1
         },
         "title": {
@@ -287,6 +286,7 @@
         },
         "visual_candidates": {
           "type": "array",
+          "maxItems": 2,
           "items": {
             "$ref": "#/$defs/visual_candidate"
           }
