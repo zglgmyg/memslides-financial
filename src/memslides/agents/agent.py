@@ -27,6 +27,7 @@ from memslides.memory.extract.tool_reasoning import (
     extract_text_from_content,
     normalize_reason_text,
 )
+from memslides.memory.collect.tool_segment import ToolCallSegment
 from memslides.templates.runtime_state import load_template_runtime_state
 from memslides.utils.config import (
     LLM,
@@ -1647,8 +1648,75 @@ class Agent:
         # 计算截断边界：保留最近 keep_recent*2 条消息
         cutoff_idx = len(self.chat_history) - keep_recent * 2
 
+        old_messages = list(self.chat_history[:cutoff_idx])
+        old_tool_results = {
+            msg.tool_call_id: msg
+            for msg in old_messages
+            if msg.role == Role.TOOL and msg.tool_call_id
+        }
+        removed_tool_call_ids: set[str] = set()
+
+        # Old write calls must not remain as executable-looking calls with a
+        # shortened HTML payload. Models can copy that payload into a new call
+        # and persist the history placeholder as a real slide. Collapse a
+        # completed write/tool-result pair into ordinary assistant text instead.
+        for msg in old_messages:
+            if msg.role != Role.ASSISTANT or not msg.tool_calls:
+                continue
+            if getattr(msg, "_sliding_truncated", False):
+                continue
+
+            retained_calls = []
+            write_summaries: list[str] = []
+            for tool_call in msg.tool_calls:
+                if tool_call.function.name not in {
+                    "write_html_file",
+                    "write_new_slide_file",
+                }:
+                    retained_calls.append(tool_call)
+                    continue
+
+                result = old_tool_results.get(tool_call.id)
+                if result is None:
+                    # Keep an unmatched call intact so provider tool-call/tool-result
+                    # pairing remains valid across the sliding-window boundary.
+                    retained_calls.append(tool_call)
+                    continue
+
+                result_text = result.text.strip()
+                failed = bool(result.is_error) or result_text.lower().startswith("error")
+                segment = ToolCallSegment.from_raw_tool_call(
+                    name=tool_call.function.name,
+                    args=tool_call.function.arguments or "{}",
+                    result=result_text,
+                    is_error=failed,
+                )
+                write_summaries.append(
+                    "Historical tool state: "
+                    + segment.to_text()
+                    + ". Full HTML payload omitted; call `read_file` only if its exact "
+                    "content is needed again."
+                )
+                removed_tool_call_ids.add(tool_call.id)
+
+            if write_summaries:
+                self._ensure_list_content(msg)
+                msg.content.append({"type": "text", "text": "\n".join(write_summaries)})
+                msg.tool_calls = retained_calls or None
+                msg._sliding_truncated = True
+
+        if removed_tool_call_ids:
+            self.chat_history = [
+                msg
+                for msg in self.chat_history
+                if not (
+                    msg.role == Role.TOOL
+                    and msg.tool_call_id in removed_tool_call_ids
+                )
+            ]
+
         # 标记已截断的消息，避免重复处理
-        for i, msg in enumerate(self.chat_history[:cutoff_idx]):
+        for msg in old_messages:
             if getattr(msg, '_sliding_truncated', False):
                 continue  # 已处理过
 
@@ -1656,9 +1724,6 @@ class Agent:
                 msg.content = self._truncate_old_tool_content(msg.content)
                 msg._sliding_truncated = True
             elif msg.role == Role.ASSISTANT and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if tc.function.name == "write_html_file":
-                        tc.function.arguments = self._truncate_html_args(tc.function.arguments)
                 msg._sliding_truncated = True
 
     def _expire_screenshots(self, current_observations: list[ChatMessage]):
@@ -1751,20 +1816,6 @@ class Agent:
             return result
 
         return content
-
-    def _truncate_html_args(self, args_json: str) -> str:
-        """Stage 8: 截断 write_html_file 参数中的 HTML 内容"""
-        HTML_ARG_MAX_LEN = 200
-
-        try:
-            args = json.loads(args_json)
-            if "content" in args and isinstance(args["content"], str):
-                if len(args["content"]) > HTML_ARG_MAX_LEN:
-                    # 保留开头，截断中间
-                    args["content"] = args["content"][:HTML_ARG_MAX_LEN] + "... [旧 HTML 已压缩]"
-            return json.dumps(args, ensure_ascii=False)
-        except (json.JSONDecodeError, TypeError):
-            return args_json
 
     def reset_for_new_round(self, round_summary_prompt: str = "") -> None:
         """重置 chat_history，保留 SYSTEM prompt，注入历史 Round 摘要。

@@ -1,0 +1,7 @@
+Asset: sjtu-logo-white.png
+Source: user-provided official Shanghai Jiao Tong University PNG, C:\Users\周宇晨\Downloads\校徽.png
+Source SHA-256: 482706e0a39eb9a2c04417ca7632f87060639ae853706688b60642ba28f9bd29
+Operation: copied without cropping, redraw, recoloring, or generative processing
+Source RGBA size: 4283 x 1408
+Output size: 4283 x 1408
+Output SHA-256: 482706e0a39eb9a2c04417ca7632f87060639ae853706688b60642ba28f9bd29

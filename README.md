@@ -194,6 +194,11 @@ are expanded from the current process environment when the YAML is loaded.
 Generated outputs, caches, private YAML files, and credentials must not be
 committed.
 
+This fork defaults its text and tool-calling routes to DeepSeek V4 through the
+OpenAI-compatible endpoint. Set `DEEPSEEK_API_KEY` before generation. See
+[docs/deepseek.md](docs/deepseek.md) for model routing, local embeddings, and
+the current text-only limitation.
+
 For Docker runs with a private YAML file:
 
 ```bash
@@ -226,6 +231,170 @@ python -m memslides generate --instruction "Create a one-slide project summary" 
 python -m memslides revise --workspace .memslides/session --feedback "Tighten the title"
 python -m memslides template induct --template-file template.pptx
 ```
+
+## Financial Research Integration
+
+The financial path is a separate, fail-closed workflow. A complete financial
+deck must include both verified references and SJTU branding. It never accepts,
+analyzes, or applies a PowerPoint template; do not pass `--template` to the
+financial generator. Ordinary template support remains available only to the
+ordinary MemSlides generation path.
+
+The Markdown report and PDF must be two versions of the same report. The parsed
+Markdown JSON supplies block-level citation anchors, while MinerU extracts the
+source catalog from the matching PDF appendix. Set `DEEPSEEK_API_KEY` and
+`MINERU_API_TOKEN` before running the workflow.
+
+### Complete financial workflow on PowerShell
+
+Define fresh output directories and the matching inputs:
+
+```powershell
+$Python = ".\.venv\Scripts\python.exe"
+$Markdown = "D:\path\to\report.md"
+$Pdf = "D:\path\to\report.pdf"
+$ParsedJson = "D:\path\to\report_parsed.json"
+$ResearchRun = ".memslides\research-runs\report-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$DeckRun = ".memslides\runs\report-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$Artifacts = "D:\path\to\report_citations"
+```
+
+Generate the audited outline, visualizations, and numeric audit from Markdown:
+
+```powershell
+& $Python -m memslides.research_pipeline.research_run `
+  $Markdown `
+  --output-dir $ResearchRun `
+  --candidate-mode active `
+  --max-attempts 3 `
+  --timeout 600
+```
+
+Parse the matching PDF appendix, build citation units, and validate Markdown
+citations against PDF sources:
+
+```powershell
+& $Python -c "from memslides.integrations.research_report.citation_appendix import parse_pdf_citation_appendix; print(parse_pdf_citation_appendix(r'''$Pdf''', r'''$Artifacts'''))"
+
+$SourceCatalog = Join-Path $Artifacts "citation_source_catalog.json"
+$CitationUnits = Join-Path $Artifacts "citation_units.json"
+$ValidationReport = Join-Path $Artifacts "citation_validation_report.json"
+
+& $Python -c "from memslides.integrations.research_report.citation_units import write_citation_units; print(write_citation_units(r'''$ParsedJson''', r'''$CitationUnits'''))"
+& $Python -c "from memslides.integrations.research_report.citation_validation import write_citation_validation_report; print(write_citation_validation_report(r'''$CitationUnits''', r'''$SourceCatalog''', r'''$ValidationReport'''))"
+```
+
+Review `citation_validation_report.json` before continuing. IDs in
+`source_missing` are excluded from later citation matching.
+
+Generate the financial HTML and baseline PPTX with mandatory SJTU branding.
+The financial generator deliberately has no `--template` argument:
+
+```powershell
+$Outline = Join-Path $ResearchRun "slide_outline.json"
+$VisualizationManifest = Join-Path $ResearchRun "visualizations\visualization_manifest.json"
+$NumericAudit = Join-Path $ResearchRun "numeric_audit.json"
+
+& $Python -m memslides.integrations.research_report.generate `
+  --outline $Outline `
+  --visualization-manifest $VisualizationManifest `
+  --numeric-audit $NumericAudit `
+  --output-dir $DeckRun `
+  --generation-timeout 7200 `
+  --sjtu-branding
+```
+
+Run the required reference sidecar against the generated HTML:
+
+```powershell
+$HtmlDir = Join-Path $DeckRun "outputs"
+
+& $Python -m memslides.integrations.research_report.citation_sidecar `
+  --html-dir $HtmlDir `
+  --outline $Outline `
+  --citation-units $CitationUnits `
+  --validation-report $ValidationReport `
+  --source-catalog $SourceCatalog
+```
+
+The sidecar modifies HTML and appends the PDF-ordered reference appendix; it
+does not create a PPTX. Export the modified HTML again to produce the final
+referenced and SJTU-branded deck:
+
+```powershell
+$OutputPptx = Join-Path $DeckRun "financial-report-referenced-sjtu.pptx"
+
+& $Python -c "import asyncio; from pathlib import Path; from memslides.utils.webview import convert_html_to_pptx; asyncio.run(convert_html_to_pptx(Path(r'''$HtmlDir'''), Path(r'''$OutputPptx'''), '16:9'))"
+```
+
+The final deliverable is `$OutputPptx`. See
+[docs/financial-integration.md](docs/financial-integration.md) for the audited
+artifact contracts.
+
+### SJTU HTML branding details
+
+The required `--sjtu-branding` stage inserts the packaged complete SJTU logo in
+the upper-right corner of every content page. It replaces the background of
+outline `title` and `closing` pages with the packaged 16:9 SJTU artwork. It does
+not recolor content pages and does not analyze a PowerPoint template.
+
+The branding step inserts the background as a full-slide image in the HTML; it
+does not modify a native PowerPoint master or run after PPTX generation. The
+standalone citation sidecar described below also does not invoke branding.
+
+### Reference sidecar details
+
+The required financial citation stage is an additive sidecar that runs after DeckDesigner
+has produced the final slide HTML. It does not change the outline prompt,
+`slide_outline.json`, content generation, or the normal HTML-to-PPTX exporter.
+It expects three precomputed citation artifacts:
+
+- `citation_source_catalog.json`, parsed from the matching PDF appendix with
+  MinerU in the appendix's original source order;
+- `citation_units.json`, built from citation markers in the parsed Markdown JSON;
+- `citation_validation_report.json`, which retains only citation IDs present in
+  both the Markdown-derived units and the PDF source catalog.
+
+For each slide, `evidence_refs` limits candidate citation units to the referenced
+blocks. The sidecar extracts visible claim nodes from the final HTML and asks
+DeepSeek only to map claim IDs to candidate unit IDs. It then resolves the unit
+IDs to source IDs deterministically. DeepSeek cannot create block IDs, citation
+IDs, dates, domains, URLs, or source numbers.
+
+Web-source descriptions are normalized once and cached next to the source
+catalog as `citation_reference_catalog.json`. DeepSeek may extract an explicit
+title or produce a grounded descriptive title such as `相关报道`; publisher and
+document-number fields must still occur verbatim in the PDF description. Dates
+and domains remain deterministic, and the code never constructs a URL from a
+domain. Non-web sources continue to use deterministic formatting.
+
+Run the sidecar against an existing final HTML directory:
+
+```bash
+python -m memslides.integrations.research_report.citation_sidecar \
+  --html-dir /path/to/deck/outputs \
+  --outline /path/to/slide_outline.json \
+  --citation-units /path/to/citation_units.json \
+  --validation-report /path/to/citation_validation_report.json \
+  --source-catalog /path/to/citation_source_catalog.json
+```
+
+The command requires `DEEPSEEK_API_KEY` and modifies the HTML files in place.
+It removes prior sidecar marks and appendix pages before rebuilding them, so the
+same HTML directory can be processed again. Source normalization is cached, but
+claim-to-unit matching is currently performed sequentially on every run and may
+take several minutes without intermediate console progress.
+
+Source numbers are global and follow the PDF appendix order. Body pages contain
+gray-black bracketed marks such as `[1]` and `[1,3]`; they do not contain a
+second source footer. All sources are listed after the existing deck in
+`附录` pages, with ten sources per page and the final page containing the
+remainder. The sidecar updates HTML only; run the normal HTML-to-PPTX export
+after it completes.
+
+The HTML marks use `<sup class="reference-mark">`, but the current structured
+PPTX exporter does not yet map that run to PowerPoint's native superscript
+property. Consequently, the exported baseline may differ from the HTML preview.
 
 ## Security And Privacy
 

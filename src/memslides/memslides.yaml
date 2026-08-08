@@ -6,73 +6,113 @@ offline_mode: false
 context_folding: true
 
 research_agent:
-  base_url: "${MEMSLIDES_RESEARCH_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_RESEARCH_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_RESEARCH_API_KEY:-missing-api-key}"
+  base_url: "${MEMSLIDES_RESEARCH_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_RESEARCH_MODEL:-deepseek-v4-pro}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   client_kwargs:
     timeout: 300.0
     max_retries: 1
 
 design_agent:
-  base_url: "${MEMSLIDES_DESIGN_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_DESIGN_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_DESIGN_API_KEY:-missing-api-key}"
-  is_multimodal: true
+  base_url: "${MEMSLIDES_DESIGN_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_DESIGN_MODEL:-deepseek-v4-pro}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  is_multimodal: false
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   client_kwargs:
     timeout: 300.0
     max_retries: 1
 
 modify_agent:
-  base_url: "${MEMSLIDES_MODIFY_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_MODIFY_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_MODIFY_API_KEY:-missing-api-key}"
-  is_multimodal: true
+  base_url: "${MEMSLIDES_MODIFY_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_MODIFY_MODEL:-deepseek-v4-pro}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  is_multimodal: false
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   client_kwargs:
     timeout: 300.0
     max_retries: 1
 
 reviewer_agent:
-  base_url: "${MEMSLIDES_REVIEW_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_REVIEW_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_REVIEW_API_KEY:-missing-api-key}"
-  is_multimodal: true
+  base_url: "${MEMSLIDES_REVIEW_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_REVIEW_MODEL:-deepseek-v4-pro}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  is_multimodal: false
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   client_kwargs:
     timeout: 300.0
     max_retries: 1
 
 long_context_model:
-  base_url: "${MEMSLIDES_LONG_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_LONG_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_LONG_API_KEY:-missing-api-key}"
+  base_url: "${MEMSLIDES_LONG_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_LONG_MODEL:-deepseek-v4-pro}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   max_concurrent: 4
   client_kwargs:
     timeout: 300.0
     max_retries: 1
 
 fast_model:
-  base_url: "${MEMSLIDES_FAST_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_FAST_MODEL:-gpt-4.1-mini}"
-  api_key: "${MEMSLIDES_FAST_API_KEY:-missing-api-key}"
+  base_url: "${MEMSLIDES_FAST_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_FAST_MODEL:-deepseek-v4-flash}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   max_concurrent: 4
   client_kwargs:
     timeout: 180.0
     max_retries: 1
 
 balanced_model:
-  base_url: "${MEMSLIDES_BALANCED_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_BALANCED_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_BALANCED_API_KEY:-missing-api-key}"
+  base_url: "${MEMSLIDES_BALANCED_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_BALANCED_MODEL:-deepseek-v4-flash}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   max_concurrent: 4
   client_kwargs:
     timeout: 300.0
     max_retries: 1
 
 vision_model:
-  base_url: "${MEMSLIDES_VISION_BASE_URL:-https://api.openai.com/v1}"
-  model: "${MEMSLIDES_VISION_MODEL:-gpt-4.1}"
-  api_key: "${MEMSLIDES_VISION_API_KEY:-missing-api-key}"
+  base_url: "${MEMSLIDES_VISION_BASE_URL:-https://api.deepseek.com}"
+  model: "${MEMSLIDES_VISION_MODEL:-deepseek-v4-pro}"
+  api_key: "${DEEPSEEK_API_KEY:-missing-api-key}"
   max_concurrent: 4
-  is_multimodal: true
+  is_multimodal: false
+  soft_response_parsing: true
+  sampling_parameters:
+    extra_body:
+      thinking:
+        type: disabled
   client_kwargs:
     timeout: 180.0
     max_retries: 1
@@ -103,17 +143,17 @@ memory:
     multi_query: "design_agent"
     template_analyze: "design_agent"
   embedding:
-    provider: "${MEMSLIDES_EMBEDDING_PROVIDER:-openai-compatible}"
-    model: "${MEMSLIDES_EMBEDDING_MODEL:-text-embedding-3-small}"
-    dim: "${MEMSLIDES_EMBEDDING_DIM:-1536}"
+    provider: "${MEMSLIDES_EMBEDDING_PROVIDER:-local}"
+    model: "${MEMSLIDES_EMBEDDING_MODEL:-BAAI/bge-m3}"
+    dim: "${MEMSLIDES_EMBEDDING_DIM:-1024}"
     device: "auto"
     batch_size: 32
     max_length: 512
     cache_enabled: true
     cache_size: 512
-    api_model: "${MEMSLIDES_EMBEDDING_API_MODEL:-text-embedding-3-small}"
-    api_base_url: "${MEMSLIDES_EMBEDDING_API_BASE_URL:-https://api.openai.com/v1}"
-    base_url: "${MEMSLIDES_EMBEDDING_BASE_URL:-https://api.openai.com/v1}"
+    api_model: "${MEMSLIDES_EMBEDDING_API_MODEL:-}"
+    api_base_url: "${MEMSLIDES_EMBEDDING_API_BASE_URL:-}"
+    base_url: "${MEMSLIDES_EMBEDDING_BASE_URL:-}"
     api_fallback_model: ""
     api_fallback_base_url: ""
     api_fallback_api_key: ""

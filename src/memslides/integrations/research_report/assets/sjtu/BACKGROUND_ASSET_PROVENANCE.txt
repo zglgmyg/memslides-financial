@@ -1,0 +1,6 @@
+Asset: sjtu-title-closing-background.png
+Source: user-provided SJTU background PNG from the Codex clipboard attachment
+Source SHA-256: 9d3472ec5ae1b33a8cc27088c426b1a63e5ca15dd6d8b76590d0327a8d84c24d
+Operation: copied without cropping, resizing, redraw, recoloring, or generative processing
+Source and output size: 1120 x 630 (16:9)
+Output SHA-256: 9d3472ec5ae1b33a8cc27088c426b1a63e5ca15dd6d8b76590d0327a8d84c24d

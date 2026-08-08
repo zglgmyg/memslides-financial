@@ -408,8 +408,73 @@ async def _build_attachment_grounded_manuscript(runtime: Any, request: InputRequ
     return manuscript_path
 
 
-def _write_content_asset_manifest(runtime: Any, manuscript_path: Path) -> Path:
+def _verified_asset_manifest(
+    *, workspace: Path, manuscript_path: Path, manifest_path: Path
+) -> dict[str, Any]:
+    resolved_manifest = manifest_path.resolve()
+    if not resolved_manifest.is_relative_to(workspace):
+        raise ValueError("prebuilt_asset_manifest must be inside the session workspace.")
+    try:
+        payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Unable to read prebuilt asset manifest: {resolved_manifest}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("prebuilt_asset_manifest must contain a JSON object.")
+
+    declared_manuscript = Path(str(payload.get("manuscript", "") or ""))
+    if not declared_manuscript.is_absolute():
+        declared_manuscript = resolved_manifest.parent / declared_manuscript
+    if declared_manuscript.resolve() != manuscript_path.resolve():
+        raise ValueError("prebuilt_asset_manifest references a different manuscript.")
+
+    assets = payload.get("assets")
+    if not isinstance(assets, list):
+        raise ValueError("prebuilt_asset_manifest.assets must be a list.")
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            raise ValueError(f"prebuilt_asset_manifest.assets[{index}] must be an object.")
+        asset_path = Path(str(asset.get("path", "") or ""))
+        if not asset_path.is_absolute():
+            asset_path = resolved_manifest.parent / asset_path
+        asset_path = asset_path.resolve()
+        if not asset_path.is_relative_to(workspace):
+            raise ValueError(f"Verified asset escapes the session workspace: {asset_path}")
+        if not asset_path.is_file():
+            raise ValueError(f"Verified asset does not exist: {asset_path}")
+        verification = asset.get("verification")
+        if not isinstance(verification, dict) or verification.get("status") != "passed":
+            raise ValueError(
+                f"Asset {index} is missing verification.status='passed'."
+            )
+
+    payload["manuscript"] = str(manuscript_path.resolve())
+    payload["workspace"] = str(workspace)
+    return payload
+
+
+def _write_content_asset_manifest(
+    runtime: Any,
+    manuscript_path: Path,
+    *,
+    prebuilt_manifest_path: str | Path | None = None,
+) -> Path:
     workspace = Path(runtime.workspace).resolve()
+    manifest_path = workspace / "asset_manifest.json"
+    if prebuilt_manifest_path:
+        source_path = Path(prebuilt_manifest_path)
+        if not source_path.is_absolute():
+            source_path = workspace / source_path
+        payload = _verified_asset_manifest(
+            workspace=workspace,
+            manuscript_path=manuscript_path,
+            manifest_path=source_path,
+        )
+        if source_path.resolve() != manifest_path.resolve():
+            manifest_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        return manifest_path
+
     payload: dict[str, Any] = {
         "manuscript": str(manuscript_path.resolve()),
         "workspace": str(workspace),
@@ -471,7 +536,6 @@ def _write_content_asset_manifest(runtime: Any, manuscript_path: Path) -> Path:
     )
     payload["formulas"] = list(dict.fromkeys(candidate.strip() for candidate in formula_candidates if candidate.strip()))[:8]
 
-    manifest_path = workspace / "asset_manifest.json"
     manifest_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -479,8 +543,8 @@ def _write_content_asset_manifest(runtime: Any, manuscript_path: Path) -> Path:
     return manifest_path
 
 
-def _asset_manifest_prompt(manifest_path: Path) -> str:
-    return (
+def _asset_manifest_prompt(manifest_path: Path, *, verified_read_only: bool = False) -> str:
+    prompt = (
         "📎 **Attachment asset contract**:\n"
         f"- Read `{manifest_path.name}` before writing slide HTML.\n"
         "- Use real attachment-derived figures/tables from the manifest when they are relevant and exist.\n"
@@ -488,6 +552,15 @@ def _asset_manifest_prompt(manifest_path: Path) -> str:
         "- Do not replace real content with SVG text images just to satisfy a layout slot.\n"
         "- Do not use asset paths outside the current workspace."
     )
+    if verified_read_only:
+        prompt += (
+            "\n- This manifest contains financially audited, read-only assets."
+            "\n- Every asset whose `verification.status` is `passed` MUST be used on its bound slide."
+            "\n- Do not regenerate, redraw, recalculate, replace, crop away, or edit verified charts/tables."
+            "\n- You may only position and scale the complete asset while preserving legibility and aspect ratio."
+            "\n- The manuscript, asset manifest, evidence manifest, and verified asset files are immutable."
+        )
+    return prompt
 
 
 def _page_asset_plan_prompt(plan_path: Path) -> str:
@@ -1141,7 +1214,14 @@ async def run_generation_flow(
             md_file = _persist_research_manuscript(self, request)
             self.intermediate_output["manuscript"] = md_file
             info(f"Researcher stage completed via saved manuscript fallback: {md_file}")
-        asset_manifest_path = _write_content_asset_manifest(self, md_file)
+        prebuilt_asset_manifest = str(
+            (request.extra_info or {}).get("prebuilt_asset_manifest", "") or ""
+        ).strip()
+        asset_manifest_path = _write_content_asset_manifest(
+            self,
+            md_file,
+            prebuilt_manifest_path=prebuilt_asset_manifest or None,
+        )
         info(f"Saved attachment asset manifest to {asset_manifest_path}")
         page_asset_plan_path: Path | None = None
         if request.convert_type == ConvertType.TEMPLATE_PLANNER:
@@ -1327,7 +1407,7 @@ async def run_generation_flow(
                         content=(
                             current_system
                             + f"\n\n{workspace_context}"
-                            + f"\n\n{_asset_manifest_prompt(asset_manifest_path)}"
+                            + f"\n\n{_asset_manifest_prompt(asset_manifest_path, verified_read_only=bool(prebuilt_asset_manifest))}"
                         ),
                     )
                     info(
@@ -1808,6 +1888,31 @@ async def run_generation_flow(
             slide_html_dir = resolved_slide_html_dir
             self.intermediate_output["slide_html_dir"] = str(slide_html_dir)
             self.save_results()
+            _extra_info = request.extra_info or {}
+            if _extra_info.get("financial_artifacts_read_only") is True:
+                from memslides.integrations.research_report.html_brand_postprocess import (
+                    apply_page_roles_to_html,
+                    apply_sjtu_brand_to_html,
+                )
+
+                _financial_page_roles = list(
+                    _extra_info.get("financial_page_roles") or []
+                )
+                apply_page_roles_to_html(
+                    slide_html_dir,
+                    _financial_page_roles,
+                )
+                if _extra_info.get("sjtu_html_branding") is True:
+                    _brand_report = apply_sjtu_brand_to_html(
+                        slide_html_dir,
+                        _financial_page_roles,
+                    )
+                    _brand_report_path = self.workspace / "sjtu_html_brand_report.json"
+                    _brand_report_path.write_text(
+                        json.dumps(_brand_report, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    self.intermediate_output["sjtu_html_brand_report"] = str(_brand_report_path)
             pptx_path = self.workspace / f"{md_file.stem}.pptx"
             slide_html_dir, export_html_files = await self._export_slides_with_agent_repair(
                 slide_html_dir,

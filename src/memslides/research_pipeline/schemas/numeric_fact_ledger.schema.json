@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-report-ppt-agent.local/schemas/numeric_fact_ledger.schema.json",
+  "title": "Typed Numeric Fact Ledger",
+  "type": "object",
+  "required": ["schema_version", "fact_count", "facts"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "fact_count": {"type": "integer", "minimum": 0},
+    "facts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fact"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["block", "table"]},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "entity": {
+      "type": "object",
+      "required": ["id", "name", "type"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
+        "type": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": ["kind", "label"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "label": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "fact": {
+      "type": "object",
+      "required": ["fact_id", "source", "raw_value", "normalized_value", "unit", "label", "period", "entity", "metric_key", "metric_label", "measure_kind", "unit_family", "unit_scale", "currency", "scope", "scenario", "source_locator"],
+      "properties": {
+        "fact_id": {"type": "string", "pattern": "^fact_[a-f0-9]+$"},
+        "source": {"$ref": "#/$defs/source"},
+        "raw_value": {"type": "string", "minLength": 1},
+        "normalized_value": {"type": "string", "minLength": 1},
+        "unit": {"type": "string"},
+        "label": {"type": ["string", "null"]},
+        "period": {"type": ["string", "null"]},
+        "entity": {"$ref": "#/$defs/entity"},
+        "metric_key": {"type": "string", "minLength": 1},
+        "metric_label": {"type": "string"},
+        "measure_kind": {"enum": ["amount", "ratio", "growth_rate", "share", "per_share", "multiple", "count", "unknown"]},
+        "unit_family": {"enum": ["currency", "percentage", "multiple", "count", "capacity", "volume", "dimensionless", "unknown"]},
+        "unit_scale": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
+        "currency": {"type": "string"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "scenario": {"enum": ["actual", "estimate", "guidance", "target", "unknown"]},
+        "source_locator": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["start", "end"],
+              "properties": {
+                "start": {"type": "integer", "minimum": 0},
+                "end": {"type": "integer", "minimum": 1}
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["row_index", "column_index"],
+              "properties": {
+                "row_index": {"type": "integer", "minimum": 0},
+                "column_index": {"type": "integer", "minimum": 0}
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

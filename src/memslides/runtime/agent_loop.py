@@ -3657,14 +3657,6 @@ class AgentLoop(_AgentLoopRuntimeBindings):
         )
         return True
 
-    async def _run_generation_impl(
-        self,
-        request: InputRequest,
-        check_llms: bool = False,
-    ) -> AsyncGenerator[str | ChatMessage, None]:
-        async for item in self.run(request, check_llms=check_llms):
-            yield item
-
     @timer("MemSlides Loop")
     async def run(
         self,
@@ -4613,13 +4605,7 @@ User Request: {user_message}"""
             shutil.copy2(source_pptx, dest_pptx)
             logger.info(f"[TEMPLATE] Copied source.pptx to {template_dir} (original: {original_name})")
 
-            template_llm_obj = None
-            vision_llm_obj = None
-            if self.memory_system:
-                llm_objects = getattr(self.memory_system, "llm_objects_by_task", None)
-                if llm_objects:
-                    template_llm_obj = llm_objects.get("template_analyze") or llm_objects.get("template")
-                    vision_llm_obj = llm_objects.get("vision") or template_llm_obj
+            template_llm_obj, vision_llm_obj = self._resolve_template_analysis_llms()
 
             analyzer = TemplateAnalyzer(
                 workspace=self.workspace,
@@ -4651,14 +4637,7 @@ User Request: {user_message}"""
                 )
 
             style_extractor = StyleExtractor()
-            _template_llm = None
-            if self.memory_system:
-                llm_objects = getattr(self.memory_system, "llm_objects_by_task", None)
-                if llm_objects:
-                    _template_llm = llm_objects.get("template_analyze") or llm_objects.get("template")
-                elif hasattr(self.memory_system, "llm"):
-                    _template_llm = self.memory_system.llm
-            content_extractor = ContentPatternExtractor(llm=_template_llm)
+            content_extractor = ContentPatternExtractor(llm=template_llm_obj)
 
             design_constraints = await style_extractor.extract(
                 analysis.slides_html,
@@ -4722,6 +4701,31 @@ User Request: {user_message}"""
             import traceback
             logger.debug(traceback.format_exc())
             return None
+
+    def _resolve_template_analysis_llms(self) -> tuple[Any, Any]:
+        """Resolve template models without requiring memory persistence."""
+
+        llm_objects: dict[str, Any] = {}
+        if self.memory_system:
+            llm_objects = (
+                getattr(self.memory_system, "llm_objects_by_task", None) or {}
+            )
+
+        template_llm = (
+            llm_objects.get("template_analyze")
+            or llm_objects.get("template")
+            or getattr(self.memory_system, "llm", None)
+        )
+        vision_llm = llm_objects.get("vision")
+
+        if template_llm is None:
+            from memslides.utils.llm_routing import resolve_task_llm
+
+            template_llm = resolve_task_llm(self.config, "template_analyze")
+        if vision_llm is None:
+            vision_llm = getattr(self.config, "design_agent", None) or template_llm
+
+        return template_llm, vision_llm
 
     def _clean_template_induction(self, slide_induction: dict[str, Any]) -> dict[str, Any]:
         def _clean_key(value: str) -> str:

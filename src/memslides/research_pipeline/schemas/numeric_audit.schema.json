@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-run.local/schemas/numeric_audit.schema.json",
+  "title": "Research Run Numeric Audit",
+  "type": "object",
+  "required": ["schema_version", "status", "summary", "visualizations"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "status": {"const": "passed"},
+    "summary": {
+      "type": "object",
+      "required": ["visualization_count", "audited_value_count", "mismatch_count"],
+      "properties": {
+        "visualization_count": {"type": "integer", "minimum": 0},
+        "audited_value_count": {"type": "integer", "minimum": 0},
+        "mismatch_count": {"const": 0}
+      },
+      "additionalProperties": false
+    },
+    "visualizations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "slide_id",
+          "visualization_id",
+          "status",
+          "audited_value_count",
+          "entries"
+        ],
+        "properties": {
+          "slide_id": {"type": "string", "minLength": 1},
+          "visualization_id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["passed", "not_applicable"]},
+          "audited_value_count": {"type": "integer", "minimum": 0},
+          "metric_group": {"type": ["object", "null"]},
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["status"],
+              "properties": {"status": {"const": "matched"}},
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

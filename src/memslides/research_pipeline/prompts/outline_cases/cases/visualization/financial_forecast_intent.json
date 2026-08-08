@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "id": "financial_forecast_intent",
+  "name": "财务预测仅提出可视化意图",
+  "category": "visualization",
+  "priority": 70,
+  "match": {
+    "all": ["has_tables", "has_financial_forecast_terms"],
+    "any": [],
+    "none": []
+  },
+  "guidance": {
+    "applicable_when": [
+      "来源中存在财务表格，并明确包含历史值或预测值"
+    ],
+    "recommended": [
+      "title逐字沿用原文章节标题",
+      "Outline只描述图表或表格意图，具体数值留给Visualization JSON",
+      "历史数据与预测数据必须明确区分"
+    ],
+    "avoid": [
+      "不得在visual_candidates中写入categories、series、values、columns或rows",
+      "不得混用不同表格或不同机构的预测口径"
+    ]
+  },
+  "example": {
+    "input": {
+      "section_title": "2.1 盈利预测假设与业务拆分",
+      "table_summary": "营业收入和归母净利润，包含2023A、2024A和2025E"
+    },
+    "expected": {
+      "page_role": "content",
+      "slide_type": "financial_forecast",
+      "title": "2.1 盈利预测假设与业务拆分",
+      "visual_candidates": [
+        {
+          "candidate_id": "visual_001",
+          "type": "chart",
+          "description": "展示收入与利润的历史值及预测趋势"
+        }
+      ]
+    }
+  }
+}

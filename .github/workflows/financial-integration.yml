@@ -1,0 +1,45 @@
+name: Financial integration tests
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: financial-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project and test runner
+        run: python -m pip install --upgrade pip pytest -e .
+
+      - name: Run financial integration tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: >-
+          python -m pytest -p no:cacheprovider -q
+          tests/test_research_report_adapter.py
+          tests/test_deepseek_defaults.py
+          tests/test_financial_generation_handoff.py
+          tests/test_oss_structured_visual_assets.py

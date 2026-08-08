@@ -13,6 +13,7 @@ workspace/
 /memory/
 outputs/
 cache/
+data/reports/agent/*_citations/
 .cache/
 .memory/
 .secrets/
@@ -36,6 +37,7 @@ suite_report.json
 *.webm
 
 # Python
+.venv/
 __pycache__/
 *.py[cod]
 *.egg-info/

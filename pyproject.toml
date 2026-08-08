@@ -39,12 +39,16 @@ research = [
   "chromadb",
   "bm25s",
   "jieba",
+  "jsonschema>=4.18,<5",
+  "lxml>=4.9,<7",
   "PyStemmer",
   "markitdown",
+  "sentence-transformers",
 ]
 
 [project.scripts]
 memslides = "memslides.__main__:main"
+memslides-research-run = "memslides.research_pipeline.research_run.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -62,4 +66,10 @@ memslides = [
   "memory/core/*.sql",
   "memory/template_guides/*.md",
   "memory/template_guides/prompts/*.j2",
+  "research_pipeline/prompts/*.md",
+  "research_pipeline/prompts/outline_cases/*.json",
+  "research_pipeline/prompts/outline_cases/cases/*/*.json",
+  "research_pipeline/schemas/*.json",
+  "integrations/research_report/assets/sjtu/*.png",
+  "integrations/research_report/assets/sjtu/*.txt",
 ]
