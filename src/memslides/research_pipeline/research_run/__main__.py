@@ -17,6 +17,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--outline-input", type=Path)
     parser.add_argument(
+        "--speaker-manuscript-input",
+        type=Path,
+        help="Use a pre-generated speaker manuscript before slide planning",
+    )
+    parser.add_argument(
+        "--speaker-checkpoint",
+        type=Path,
+        help="Reuse or persist the verified speaker manuscript across outline retries",
+    )
+    parser.add_argument(
         "--candidate-mode",
         choices=["active", "shadow", "disabled"],
         default="active",
@@ -27,6 +37,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-provider", choices=["auto", "deepseek", "siliconflow"])
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--max-attempts", type=int)
+    parser.add_argument(
+        "--speaker-max-tokens",
+        type=int,
+        help="Output budget for the speaker-manuscript stage (default: 24000)",
+    )
+    parser.add_argument(
+        "--speaker-max-attempts",
+        type=int,
+        help="Validation/retry attempts for the speaker-manuscript stage (default: 2)",
+    )
     parser.add_argument("--timeout", type=int)
     return parser
 
@@ -46,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
             max_tokens=args.max_tokens,
             max_attempts=args.max_attempts,
             timeout=args.timeout,
+            speaker_manuscript_input=args.speaker_manuscript_input,
+            speaker_checkpoint=args.speaker_checkpoint,
+            speaker_max_tokens=args.speaker_max_tokens,
+            speaker_max_attempts=args.speaker_max_attempts,
         )
     except ResearchRunPipelineError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -109,6 +109,8 @@ def canonicalize_outline_from_bundle(
     outline: Mapping[str, Any],
     snapshot: DocumentIntelligenceSnapshot,
     allowed_evidence: set[tuple[str, str]] | None = None,
+    *,
+    preserve_source_titles: bool = True,
 ) -> dict[str, int]:
     """Resolve source-owned fields and omitted citations without another LLM call.
 
@@ -165,11 +167,16 @@ def canonicalize_outline_from_bundle(
             str(section.get("title_block_id") or ""), {}
         )
         canonical_title = str(title_block.get("text_raw") or "").strip()
-        if canonical_title and str(slide.get("section") or "").strip() != canonical_title:
+        if (
+            preserve_source_titles
+            and canonical_title
+            and str(slide.get("section") or "").strip() != canonical_title
+        ):
             slide["section"] = canonical_title
             counts["labels"] += 1
         if (
-            canonical_title
+            preserve_source_titles
+            and canonical_title
             and slide.get("page_role") in {"section", "content"}
             and slide.get("slide_type") != "figure_page"
             and str(slide.get("title") or "").strip() != canonical_title
@@ -363,6 +370,8 @@ def validate_outline_evidence(
     outline: Mapping[str, Any],
     snapshot: DocumentIntelligenceSnapshot,
     allowed_evidence: set[tuple[str, str]] | None = None,
+    *,
+    preserve_source_structure: bool = True,
 ) -> list[Issue]:
     issues: list[Issue] = []
     section_positions = {value: index for index, value in enumerate(snapshot.section_order)}
@@ -385,20 +394,27 @@ def validate_outline_evidence(
         if section_ref is not None:
             section_ref = str(section_ref)
             if section_ref not in snapshot.sections_by_id:
-                issues.append(Issue("error", "BUNDLE.UNKNOWN_SECTION", f"{base}.section_ref", f"unknown section_ref {section_ref!r}"))
+                if preserve_source_structure:
+                    issues.append(Issue("error", "BUNDLE.UNKNOWN_SECTION", f"{base}.section_ref", f"unknown section_ref {section_ref!r}"))
             else:
                 position = section_positions[section_ref]
-                if position < previous_position:
+                if preserve_source_structure and position < previous_position:
                     issues.append(Issue("error", "BUNDLE.SECTION_ORDER", f"{base}.section_ref", "slide section order differs from DocumentBundle"))
                 previous_position = max(previous_position, position)
                 section = snapshot.sections_by_id[section_ref]
                 title_block = snapshot.blocks_by_id.get(str(section.get("title_block_id") or ""), {})
                 canonical_title = str(title_block.get("text_raw") or "").strip()
                 declared_section = str(slide.get("section") or "").strip()
-                if declared_section and canonical_title and declared_section != canonical_title:
+                if (
+                    preserve_source_structure
+                    and declared_section
+                    and canonical_title
+                    and declared_section != canonical_title
+                ):
                     issues.append(Issue("error", "BUNDLE.SECTION_TITLE_MISMATCH", f"{base}.section", "slide section label must match the DocumentBundle heading"))
                 if (
-                    slide.get("page_role") in {"section", "content"}
+                    preserve_source_structure
+                    and slide.get("page_role") in {"section", "content"}
                     and slide.get("slide_type") != "figure_page"
                     and canonical_title
                     and slide.get("title") is not None
@@ -507,7 +523,7 @@ def validate_outline_evidence(
             )
         if role == "content" and not refs:
             issues.append(Issue("error", "BUNDLE.CONTENT_WITHOUT_EVIDENCE", f"{base}.evidence_refs", "content slide must reference DocumentBundle evidence"))
-        if role in {"content", "section"} and section_ref is None:
+        if preserve_source_structure and role in {"content", "section"} and section_ref is None:
             issues.append(Issue("error", "BUNDLE.SLIDE_WITHOUT_SECTION", f"{base}.section_ref", f"{role} slide must reference an existing section"))
         if role == "content" and not slide.get("source_refs"):
             issues.append(Issue("error", "BUNDLE.CONTENT_WITHOUT_SOURCE", f"{base}.source_refs", "content slide must preserve source_refs"))
@@ -526,7 +542,13 @@ def validate_outline_evidence(
                 issues.append(Issue("error", "BUNDLE.UNKNOWN_EVIDENCE", path, f"unknown {kind} evidence {identity!r}"))
             elif allowed_evidence is not None and (kind, identity) not in allowed_evidence:
                 issues.append(Issue("error", "BUNDLE.EVIDENCE_NOT_IN_MEMORY", path, f"evidence {identity!r} was not preserved by Context Compression"))
-            elif section_ref in snapshot.sections_by_id and not _descendant_or_same(snapshot, evidence.section_id, str(section_ref)):
+            elif (
+                preserve_source_structure
+                and section_ref in snapshot.sections_by_id
+                and not _descendant_or_same(
+                    snapshot, evidence.section_id, str(section_ref)
+                )
+            ):
                 issues.append(Issue("error", "BUNDLE.CROSS_SECTION_EVIDENCE", path, f"evidence {identity!r} is outside section {section_ref!r}"))
             if evidence is not None:
                 if kind == "block" and identity in snapshot.blocks_by_id:
@@ -573,6 +595,8 @@ def validate_outline_evidence(
                         )
                     )
                 elif (
+                    preserve_source_structure
+                    and
                     section_ref in snapshot.sections_by_id
                     and not _descendant_or_same(
                         snapshot, evidence.section_id, str(section_ref)
@@ -587,7 +611,11 @@ def validate_outline_evidence(
                         )
                     )
 
-        if role == "content" and slide_type != "figure_page":
+        if (
+            preserve_source_structure
+            and role == "content"
+            and slide_type != "figure_page"
+        ):
             first_paragraph = next(
                 (
                     block
@@ -629,5 +657,181 @@ def validate_outline_evidence(
                     base=base,
                 )
             )
-    issues.extend(_front_matter_summary_issues(outline, snapshot))
+    if preserve_source_structure:
+        issues.extend(_front_matter_summary_issues(outline, snapshot))
     return issues
+
+
+def validate_speaker_manuscript_mapping(
+    outline: Mapping[str, Any],
+    speaker_manuscript: Mapping[str, Any],
+) -> list[Issue]:
+    """Require a lossless, ordered mapping from speech segments to slide content."""
+
+    issues: list[Issue] = []
+    segment_section: dict[str, str] = {}
+    segment_evidence: dict[str, set[tuple[str, str]]] = {}
+    expected: list[str] = []
+    for section in speaker_manuscript.get("sections", []):
+        if not isinstance(section, Mapping):
+            continue
+        section_name = str(section.get("section_name") or "")
+        for segment in section.get("segments", []):
+            if not isinstance(segment, Mapping):
+                continue
+            segment_id = str(segment.get("segment_id") or "")
+            if not segment_id:
+                continue
+            expected.append(segment_id)
+            segment_section[segment_id] = section_name
+            segment_evidence[segment_id] = {
+                (str(ref.get("kind")), str(ref.get("id")))
+                for ref in segment.get("evidence_refs", [])
+                if isinstance(ref, Mapping) and ref.get("kind") and ref.get("id")
+            }
+
+    actual: list[str] = []
+    for slide_index, slide in enumerate(outline.get("slides", [])):
+        if not isinstance(slide, Mapping) or slide.get("page_role") in {
+            "title",
+            "closing",
+        }:
+            continue
+        source_ids = slide.get("source_segment_ids")
+        if not isinstance(source_ids, list) or not source_ids:
+            issues.append(
+                Issue(
+                    "error",
+                    "SPEAKER.MISSING_SEGMENT_MAPPING",
+                    f"$.slides[{slide_index}].source_segment_ids",
+                    "every content or section slide must map to one or more speaker segments",
+                )
+            )
+            continue
+        page_ids = [str(value) for value in source_ids]
+        actual.extend(page_ids)
+        unknown = [value for value in page_ids if value not in segment_section]
+        if unknown:
+            issues.append(
+                Issue(
+                    "error",
+                    "SPEAKER.UNKNOWN_SEGMENT",
+                    f"$.slides[{slide_index}].source_segment_ids",
+                    "unknown speaker segment(s): " + ",".join(unknown),
+                )
+            )
+            continue
+        page_sections = {segment_section[value] for value in page_ids}
+        if len(page_sections) != 1 or str(slide.get("section") or "") not in page_sections:
+            issues.append(
+                Issue(
+                    "error",
+                    "SPEAKER.SECTION_MISMATCH",
+                    f"$.slides[{slide_index}].section",
+                    "slide section must equal the mapped speaker manuscript section_name",
+                )
+            )
+        allowed_refs = set().union(*(segment_evidence[value] for value in page_ids))
+        slide_refs = {
+            (str(ref.get("kind")), str(ref.get("id")))
+            for ref in slide.get("evidence_refs", [])
+            if isinstance(ref, Mapping) and ref.get("kind") and ref.get("id")
+        }
+        if not slide_refs.issubset(allowed_refs):
+            issues.append(
+                Issue(
+                    "error",
+                    "SPEAKER.EVIDENCE_OUTSIDE_SEGMENTS",
+                    f"$.slides[{slide_index}].evidence_refs",
+                    "slide evidence must come from its mapped speaker segments",
+                )
+            )
+
+    if actual != expected:
+        issues.append(
+            Issue(
+                "error",
+                "SPEAKER.NON_LOSSLESS_ORDER",
+                "$.slides[*].source_segment_ids",
+                "speaker segments must appear exactly once and in manuscript order",
+            )
+        )
+    return issues
+
+
+def canonicalize_outline_from_speaker(
+    outline: dict[str, Any],
+    speaker_manuscript: Mapping[str, Any],
+) -> None:
+    """Deterministically assign every speech segment once within its module."""
+
+    slides = [
+        slide
+        for slide in outline.get("slides", [])
+        if isinstance(slide, dict)
+        and slide.get("page_role") not in {"title", "closing"}
+    ]
+    for section in speaker_manuscript.get("sections", []):
+        if not isinstance(section, Mapping):
+            continue
+        section_name = str(section.get("section_name") or "")
+        segments = [
+            segment
+            for segment in section.get("segments", [])
+            if isinstance(segment, Mapping) and segment.get("segment_id")
+        ]
+        section_slides = [
+            slide for slide in slides if str(slide.get("section") or "") == section_name
+        ]
+        if not segments or not section_slides:
+            continue
+        if len(section_slides) > len(segments):
+            # Leave this structural problem to the validator/model retry instead of
+            # duplicating a segment merely to fill an extra page.
+            continue
+
+        section_ids = {str(segment["segment_id"]) for segment in segments}
+        weights = [
+            max(
+                1,
+                sum(
+                    str(value) in section_ids
+                    for value in slide.get("source_segment_ids", [])
+                ),
+            )
+            for slide in section_slides
+        ]
+        segment_cursor = 0
+        remaining_weight = sum(weights)
+        for slide_index, (slide, weight) in enumerate(zip(section_slides, weights)):
+            remaining_segments = len(segments) - segment_cursor
+            remaining_slides = len(section_slides) - slide_index
+            if remaining_slides == 1:
+                take = remaining_segments
+            else:
+                proportional = round(remaining_segments * weight / remaining_weight)
+                take = max(1, min(proportional, remaining_segments - remaining_slides + 1))
+            assigned = segments[segment_cursor : segment_cursor + take]
+            segment_cursor += take
+            remaining_weight -= weight
+            slide["source_segment_ids"] = [
+                str(segment["segment_id"]) for segment in assigned
+            ]
+            allowed_refs = {
+                (str(ref.get("kind")), str(ref.get("id")))
+                for segment in assigned
+                for ref in segment.get("evidence_refs", [])
+                if isinstance(ref, Mapping) and ref.get("kind") and ref.get("id")
+            }
+            current_refs = [
+                ref
+                for ref in slide.get("evidence_refs", [])
+                if isinstance(ref, Mapping)
+                and (str(ref.get("kind")), str(ref.get("id"))) in allowed_refs
+            ]
+            if not current_refs and allowed_refs:
+                current_refs = [
+                    {"kind": kind, "id": identity}
+                    for kind, identity in sorted(allowed_refs)
+                ]
+            slide["evidence_refs"] = current_refs

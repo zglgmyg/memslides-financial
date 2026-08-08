@@ -202,18 +202,18 @@ def test_financial_design_guidance_limits_palette_and_roles_not_layout() -> None
 
 def test_financial_html_contract_allows_content_without_fixed_title_bar(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        '<html><body data-page-role="title" style="background:#F8FAFC">Cover</body></html>',
+        '<html><body data-page-role="title" data-slide-id="slide_01" style="background:#F8FAFC">Cover</body></html>',
         encoding="utf-8",
     )
     (tmp_path / "slide_02.html").write_text(
-        """<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">
+        """<html><body data-page-role="content" data-slide-id="slide_02" style="background:#1E3A5F;color:#FFFFFF">
         <section style="position:absolute;left:8%;top:12%;background:#FFFFFF;color:#0F172A">
           Freely composed content
         </section><p style="color:#475569">Body</p></body></html>""",
         encoding="utf-8",
     )
     (tmp_path / "slide_03.html").write_text(
-        '<html><body data-page-role="closing" style="background:#1E3A5F;color:#FFFFFF">End</body></html>',
+        '<html><body data-page-role="closing" data-slide-id="slide_03" style="background:#1E3A5F;color:#FFFFFF">End</body></html>',
         encoding="utf-8",
     )
 
@@ -226,7 +226,7 @@ def test_financial_html_contract_allows_content_without_fixed_title_bar(tmp_path
 
 def test_sjtu_html_contract_rejects_unprotected_content_canvas(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        '<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">Body</body></html>',
+        '<html><body data-page-role="content" data-slide-id="slide_01" style="background:#1E3A5F;color:#FFFFFF">Body</body></html>',
         encoding="utf-8",
     )
 
@@ -241,7 +241,7 @@ def test_sjtu_html_contract_rejects_unprotected_content_canvas(tmp_path: Path) -
 
 def test_financial_html_contract_rejects_wrong_role_and_palette(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        '<html><body data-page-role="content" style="background:#0EA5E9">Wrong</body></html>',
+        '<html><body data-page-role="content" data-slide-id="slide_01" style="background:#0EA5E9">Wrong</body></html>',
         encoding="utf-8",
     )
 
@@ -251,11 +251,33 @@ def test_financial_html_contract_rejects_wrong_role_and_palette(tmp_path: Path) 
 
 def test_financial_html_contract_rejects_content_title_bar_on_cover(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        """<html><body data-page-role="title" style="background:#1E3A5F;color:#FFFFFF">
+        """<html><body data-page-role="title" data-slide-id="slide_01" style="background:#1E3A5F;color:#FFFFFF">
         <div data-financial-role="content-title-bar" style="background:#1E3A5F">Wrong</div>
         </body></html>""",
         encoding="utf-8",
     )
 
     with pytest.raises(FinancialGenerationError, match="title page must not use"):
+        _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
+
+
+def test_financial_html_validation_rejects_duplicate_substantial_text(tmp_path: Path) -> None:
+    repeated = "煤制烯烃成本优势显著，盈利能力具备韧性"
+    (tmp_path / "slide_01.html").write_text(
+        f'''<html><body data-page-role="title" data-slide-id="slide_01">
+        <h1>{repeated}</h1><div>{repeated}</div></body></html>''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinancialGenerationError, match="duplicate visible text"):
+        _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
+
+
+def test_financial_html_contract_rejects_slide_identity_mismatch(tmp_path: Path) -> None:
+    (tmp_path / "slide_01.html").write_text(
+        '<html><body data-page-role="title" data-slide-id="slide_02">Cover</body></html>',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinancialGenerationError, match="data-slide-id=slide_02"):
         _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])

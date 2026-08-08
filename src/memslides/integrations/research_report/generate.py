@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -155,9 +156,14 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
 2. Preserve this page-role map exactly:
 {role_map}
 3. Every HTML body must declare its exact role with
-   `data-page-role="title|content|closing"`. Title and closing pages must use distinct
-   compositions and must not contain an element marked
-   `data-financial-role="content-title-bar"`. A content-page title bar is optional.
+   `data-page-role="title|content|closing"` and its immutable page identity with
+   `data-slide-id="slide_XX"`, matching its filename and the corresponding manuscript
+   page. Do not move, copy, merge, or reuse content between slide identities. When a
+   page needs a structural correction, replace that page's complete HTML through the
+   controlled `write_html_file(force_regenerate=true, expected_hash=...)` flow; never
+   append a second version of its title, body, chart, or table.
+   Title and closing pages must use distinct compositions and must not contain an
+   element marked `data-financial-role="content-title-bar"`. A content-page title bar is optional.
 4. Use only this exact source palette in slide HTML:
    primary=#1E3A5F, data_primary=#2563EB, data_dark=#1E40AF,
    accent=#D97706, accent_light=#F59E0B, border=#CBD5E1,
@@ -196,6 +202,20 @@ def _validate_financial_html_contract(
         if actual_role != expected_role:
             violations.append(
                 f"{name}: data-page-role={actual_role or '<missing>'}, expected={expected_role}"
+            )
+        slide_id_match = re.search(
+            r"\bdata-slide-id\s*=\s*(['\"])(?P<slide_id>[^'\"]+)\1",
+            body_attrs,
+            flags=re.I,
+        )
+        actual_slide_id = (
+            slide_id_match.group("slide_id").strip().lower() if slide_id_match else ""
+        )
+        expected_slide_id = f"slide_{page_number:02d}"
+        if actual_slide_id != expected_slide_id:
+            violations.append(
+                f"{name}: data-slide-id={actual_slide_id or '<missing>'}, "
+                f"expected={expected_slide_id}"
             )
 
         title_bars = list(
@@ -249,6 +269,35 @@ def _validate_financial_html_contract(
         )
 
 
+def _duplicate_visible_text_fragments(html: str) -> list[str]:
+    """Return repeated, substantial visible text fragments within one slide.
+
+    This deliberately ignores short labels/numbers, which are commonly repeated in
+    tables and charts. It catches the failure mode where a repair leaves a second
+    title or body text box on the same page.
+    """
+    body_match = re.search(r"<body\b[^>]*>(.*?)</body>", html, flags=re.I | re.S)
+    if not body_match:
+        return []
+    body = re.sub(
+        r"<(?:script|style)\b[^>]*>.*?</(?:script|style)>",
+        "",
+        body_match.group(1),
+        flags=re.I | re.S,
+    )
+    fragments = [
+        re.sub(r"\s+", " ", unescape(fragment)).strip()
+        for fragment in re.findall(r">([^<>]+)<", body)
+    ]
+    counts: dict[str, int] = {}
+    for fragment in fragments:
+        # Short labels, dates, and values are valid repeated content in tables.
+        if len(fragment) < 12 or not re.search(r"[A-Za-z\u4e00-\u9fff]", fragment):
+            continue
+        counts[fragment] = counts.get(fragment, 0) + 1
+    return sorted(fragment for fragment, count in counts.items() if count > 1)
+
+
 def _validate_slide_html_dir(
     slide_html_dir: Path,
     expected_count: int,
@@ -260,6 +309,7 @@ def _validate_slide_html_dir(
 
     missing: list[str] = []
     invalid: list[str] = []
+    duplicates: list[str] = []
     for page_number in range(1, expected_count + 1):
         name = f"slide_{page_number:02d}.html"
         path = slide_html_dir / name
@@ -282,6 +332,10 @@ def _validate_slide_html_dir(
             body_text = re.sub(r"\s+", " ", body_text).strip()
         if placeholder or not has_body or (not body_text and not has_visual):
             invalid.append(name)
+            continue
+        repeated = _duplicate_visible_text_fragments(html)
+        if repeated:
+            duplicates.append(f"{name}=" + " | ".join(repeated[:3]))
 
     if missing or invalid:
         details: list[str] = []
@@ -291,6 +345,11 @@ def _validate_slide_html_dir(
             details.append("blank_or_placeholder=" + ",".join(invalid))
         raise FinancialGenerationError(
             "DeckDesigner produced an incomplete slide HTML set: " + "; ".join(details)
+        )
+    if duplicates:
+        raise FinancialGenerationError(
+            "DeckDesigner produced duplicate visible text on a slide; "
+            "regenerate the affected page instead of exporting: " + "; ".join(duplicates)
         )
     if page_roles is not None:
         _validate_financial_html_contract(

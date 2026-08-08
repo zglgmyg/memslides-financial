@@ -118,6 +118,39 @@ def artifacts() -> list[Artifact]:
     ]
 
 
+def speaker_manuscript() -> dict[str, Any]:
+    return {
+        "schema_version": "1.0.0",
+        "metadata": {
+            "title": "测试研报发言稿",
+            "audience": "投资研究汇报听众",
+            "presentation_purpose": "讲清经营表现",
+            "estimated_total_minutes": 5,
+        },
+        "opening": {"text": "先说明本次汇报范围。", "evidence_refs": []},
+        "sections": [
+            {
+                "section_id": "section_01",
+                "section_name": "经营表现",
+                "section_purpose": "说明收入变化",
+                "source_section_refs": ["sec-001"],
+                "opening_transition": "首先看经营表现。",
+                "segments": [
+                    {
+                        "segment_id": "segment_001",
+                        "narrative_role": "fact",
+                        "text": "收入保持增长。",
+                        "evidence_refs": [{"kind": "table", "id": "table-001"}],
+                    }
+                ],
+                "section_summary": "收入趋势总体向上。",
+                "closing_transition": "接下来进入总结。",
+            }
+        ],
+        "closing": {"text": "以上是本次汇报的主要内容。", "evidence_refs": []},
+    }
+
+
 def test_exporter_publishes_financial_adapter_layout(tmp_path: Path) -> None:
     output = tmp_path / "research-run"
     result = export_research_run(
@@ -199,13 +232,19 @@ def test_exporter_rejects_duplicate_series_names(tmp_path: Path) -> None:
 
 
 def test_exported_run_is_consumed_by_financial_adapter(tmp_path: Path) -> None:
+    speaker = speaker_manuscript()
+    deck_outline = outline()
+    deck_outline["slides"][1]["section"] = "经营表现"
+    deck_outline["slides"][1]["source_segment_ids"] = ["segment_001"]
     research_run = export_research_run(
         output_directory=tmp_path / "research-run",
-        outline=outline(),
+        outline=deck_outline,
         numeric_audit=audit("visual_chart", "visual_table"),
         artifacts=artifacts(),
         document_bundle_directory=tmp_path,
         document_source_sha256="d" * 64,
+        speaker_manuscript=speaker,
+        speaker_manuscript_markdown="# 测试研报发言稿\n",
     )
 
     def renderer(**kwargs: Any) -> dict[str, Any]:
@@ -235,3 +274,14 @@ def test_exported_run_is_consumed_by_financial_adapter(tmp_path: Path) -> None:
     assert result.asset_count == 2
     assert result.manuscript.is_file()
     assert result.evidence_manifest.is_file()
+    assert (research_run / "speaker_manuscript.json").is_file()
+    assert (research_run / "speaker_manuscript.md").read_text(encoding="utf-8") == (
+        "# 测试研报发言稿\n"
+    )
+    mapped_script = (tmp_path / "memslides-workspace/speaker_script_by_slide.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## 第2页｜收入趋势" in mapped_script
+    assert "首先看经营表现。" in mapped_script
+    assert "收入保持增长。" in mapped_script
+    assert "以上是本次汇报的主要内容。" in mapped_script

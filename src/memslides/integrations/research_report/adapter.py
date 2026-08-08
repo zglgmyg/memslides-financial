@@ -13,7 +13,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 
 JsonObject = dict[str, Any]
@@ -343,8 +343,22 @@ def _manuscript(
             )
         lines = [
             f"<!-- research-report page_role={page_role} -->",
-            f"# {slide['title']}",
         ]
+        source_segment_ids = [
+            str(value)
+            for value in slide.get("source_segment_ids", [])
+            if str(value).strip()
+        ]
+        section_name = str(slide.get("section", "") or "").strip()
+        if source_segment_ids:
+            lines.append(
+                "<!-- research-report source_segment_ids="
+                + ",".join(source_segment_ids)
+                + " -->"
+            )
+            if section_name:
+                lines.extend(["", f"栏目：{section_name}"])
+        lines.append(f"# {slide['title']}")
         key_message = str(slide.get("key_message", "") or "").strip()
         if key_message:
             lines.extend(["", key_message])
@@ -362,6 +376,63 @@ def _manuscript(
         lines.extend(["", f"<!-- research-report slide_id={slide_id} -->"])
         pages.append("\n".join(lines).rstrip())
     return "\n\n---\n\n".join(pages) + "\n"
+
+
+def _mapped_speaker_script(
+    outline: Mapping[str, Any],
+    speaker_manuscript: Mapping[str, Any],
+) -> str:
+    segment_text: dict[str, str] = {}
+    segment_section: dict[str, str] = {}
+    section_details: dict[str, Mapping[str, Any]] = {}
+    for section in speaker_manuscript.get("sections", []):
+        if not isinstance(section, Mapping):
+            continue
+        section_name = str(section.get("section_name") or "")
+        section_details[section_name] = section
+        for segment in section.get("segments", []):
+            if not isinstance(segment, Mapping):
+                continue
+            segment_id = str(segment.get("segment_id") or "")
+            segment_text[segment_id] = str(segment.get("text") or "")
+            segment_section[segment_id] = section_name
+
+    slides = [slide for slide in outline.get("slides", []) if isinstance(slide, Mapping)]
+    first_slide_by_section: dict[str, int] = {}
+    last_slide_by_section: dict[str, int] = {}
+    for page_number, slide in enumerate(slides, start=1):
+        ids = [str(value) for value in slide.get("source_segment_ids", [])]
+        sections = {segment_section[value] for value in ids if value in segment_section}
+        for section_name in sections:
+            first_slide_by_section.setdefault(section_name, page_number)
+            last_slide_by_section[section_name] = page_number
+
+    lines = [f"# {speaker_manuscript['metadata']['title']}｜配套发言稿"]
+    for page_number, slide in enumerate(slides, start=1):
+        lines.extend(["", f"## 第{page_number}页｜{slide['title']}", ""])
+        if page_number == 1:
+            lines.extend([str(speaker_manuscript["opening"]["text"]), ""])
+        ids = [str(value) for value in slide.get("source_segment_ids", [])]
+        section_names = [
+            name
+            for name in dict.fromkeys(
+                segment_section[value] for value in ids if value in segment_section
+            )
+        ]
+        for section_name in section_names:
+            details = section_details[section_name]
+            if first_slide_by_section.get(section_name) == page_number:
+                lines.extend([str(details["opening_transition"]), ""])
+        lines.extend(segment_text[value] for value in ids if value in segment_text)
+        for section_name in section_names:
+            details = section_details[section_name]
+            if last_slide_by_section.get(section_name) == page_number:
+                lines.extend(
+                    ["", str(details["section_summary"]), "", str(details["closing_transition"])]
+                )
+        if page_number == len(slides):
+            lines.extend(["", str(speaker_manuscript["closing"]["text"])])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def adapt_research_report(
@@ -384,6 +455,12 @@ def adapt_research_report(
     outline = _read_json(outline_file, "slide_outline.json")
     manifest = _read_json(manifest_file, "visualization_manifest.json")
     audit = _read_json(audit_file, "numeric_audit.json")
+    speaker_file = outline_file.with_name("speaker_manuscript.json")
+    speaker_manuscript = (
+        _read_json(speaker_file, "speaker_manuscript.json")
+        if speaker_file.is_file()
+        else None
+    )
 
     expected_outline_hash = str(manifest.get("outline_sha256", "") or "").strip().lower()
     actual_outline_hash = _canonical_sha256(outline)
@@ -507,6 +584,15 @@ def adapt_research_report(
     manuscript_path.write_text(
         _manuscript(slides, assets_by_slide, bindings_by_slide, workspace), encoding="utf-8"
     )
+    if speaker_manuscript is not None:
+        shutil.copy2(speaker_file, workspace / "speaker_manuscript.json")
+        speaker_markdown = speaker_file.with_suffix(".md")
+        if speaker_markdown.is_file():
+            shutil.copy2(speaker_markdown, workspace / "speaker_manuscript.md")
+        (workspace / "speaker_script_by_slide.md").write_text(
+            _mapped_speaker_script(outline, speaker_manuscript),
+            encoding="utf-8",
+        )
     asset_manifest_path = workspace / "asset_manifest.json"
     _write_json(
         asset_manifest_path,

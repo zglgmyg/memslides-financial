@@ -21,6 +21,7 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -43,9 +44,11 @@ from memslides.research_pipeline.document_intelligence import generate_chunks, l
 from memslides.research_pipeline.document_intelligence.models import DocumentIntelligenceSnapshot, IntelligenceChunk
 from memslides.research_pipeline.document_intelligence.loader import DocumentIntelligenceError
 from memslides.research_pipeline.outline_generator.bundle_validation import (
+    canonicalize_outline_from_speaker,
     canonicalize_outline_from_bundle,
     normalize_topic_sentence_key_messages,
     validate_outline_evidence,
+    validate_speaker_manuscript_mapping,
 )
 from memslides.research_pipeline.outline_generator.few_shot import (
     FewShotCaseError,
@@ -203,6 +206,7 @@ def build_messages(
     schema: Mapping[str, Any],
     few_shot: Mapping[str, Any],
     system_prompt: str,
+    speaker_manuscript: Mapping[str, Any] | None = None,
 ) -> List[Dict[str, str]]:
     selected_few_shot: Mapping[str, Any]
     if "cases" in few_shot and "selection_policy" not in few_shot:
@@ -217,6 +221,7 @@ def build_messages(
         schema,
         selected_few_shot,
         system_prompt,
+        speaker_manuscript,
     )
 
 
@@ -377,6 +382,16 @@ def call_deepseek(request_body: Mapping[str, Any], *, api_key: str, base_url: st
     except urllib.error.URLError as exc:
         raise DeepSeekAPIError(
             f"Cannot connect to DeepSeek API: {exc.reason}",
+            retryable=True,
+        ) from exc
+    except (http.client.IncompleteRead, http.client.RemoteDisconnected) as exc:
+        raise DeepSeekAPIError(
+            f"Model API response was interrupted: {exc}",
+            retryable=True,
+        ) from exc
+    except ConnectionResetError as exc:
+        raise DeepSeekAPIError(
+            "Model API connection was reset while reading the response",
             retryable=True,
         ) from exc
     except json.JSONDecodeError as exc:
@@ -591,6 +606,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=PROJECT_ROOT / "prompts" / "outline_system_prompt.md",
     )
     parser.add_argument(
+        "--speaker-manuscript",
+        type=Path,
+        help="Verified speaker_manuscript.json used as the narrative source",
+    )
+    parser.add_argument(
         "--few-shot",
         type=Path,
         default=PROJECT_ROOT / "prompts" / "outline_cases",
@@ -671,6 +691,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         context_mode = "direct" if use_direct_context else "compressed"
         schema = load_json(args.schema, "Outline schema")
+        speaker_manuscript = None
+        if args.speaker_manuscript:
+            speaker_schema = load_json(
+                PROJECT_ROOT / "schemas" / "speaker_manuscript.schema.json",
+                "Speaker manuscript schema",
+            )
+            speaker_manuscript = load_json(
+                args.speaker_manuscript,
+                "Speaker manuscript",
+            )
+            validate_json_instance(
+                speaker_manuscript,
+                speaker_schema,
+                label="Speaker manuscript",
+            )
         case_library = load_case_library(args.few_shot)
         case_selection = select_cases(snapshot, case_library)
         few_shot = case_selection.prompt_payload
@@ -703,7 +738,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else preview_context_memory(chunk)
                 for chunk in chunks
             ]
-            messages = build_messages(snapshot, preview_memories, schema, few_shot, system_prompt)
+            messages = build_messages(
+                snapshot,
+                preview_memories,
+                schema,
+                few_shot,
+                system_prompt,
+                speaker_manuscript,
+            )
             preview = {
                 "pipeline": (
                     "direct_slide_planning"
@@ -777,17 +819,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for ref in memory.get("evidence_refs", [])
             if isinstance(ref, Mapping)
         }
-        messages = build_messages(snapshot, runtime_memories, schema, few_shot, system_prompt)
+        messages = build_messages(
+            snapshot,
+            runtime_memories,
+            schema,
+            few_shot,
+            system_prompt,
+            speaker_manuscript,
+        )
 
         def postprocess_generated_outline(value: Dict[str, Any]) -> None:
-            compact_front_matter_summary_slides(value, snapshot)
-            normalize_topic_sentence_key_messages(value, snapshot)
+            if speaker_manuscript is None:
+                compact_front_matter_summary_slides(value, snapshot)
+                normalize_topic_sentence_key_messages(value, snapshot)
             fill_blank_key_messages(value)
             canonicalize_outline_from_bundle(
                 value,
                 snapshot,
                 allowed_runtime_evidence,
+                preserve_source_titles=speaker_manuscript is None,
             )
+            if speaker_manuscript is not None:
+                canonicalize_outline_from_speaker(value, speaker_manuscript)
 
         outline, issues, attempts_used = generate_with_retries(
             messages,
@@ -803,11 +856,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             max_attempts=args.max_attempts,
             validate_output=not args.skip_validation,
             postprocess_outline=postprocess_generated_outline,
-            additional_validator=lambda value: validate_outline_evidence(
-                value,
-                snapshot,
-                allowed_runtime_evidence,
-            ),
+            additional_validator=lambda value: [
+                *validate_outline_evidence(
+                    value,
+                    snapshot,
+                    allowed_runtime_evidence,
+                    preserve_source_structure=speaker_manuscript is None,
+                ),
+                *(
+                    validate_speaker_manuscript_mapping(value, speaker_manuscript)
+                    if speaker_manuscript is not None
+                    else []
+                ),
+            ],
         )
 
         output.parent.mkdir(parents=True, exist_ok=True)

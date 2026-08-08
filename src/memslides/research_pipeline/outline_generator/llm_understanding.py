@@ -189,6 +189,7 @@ def build_slide_planning_messages(
     schema: Mapping[str, Any],
     few_shot: Mapping[str, Any],
     system_prompt: str,
+    speaker_manuscript: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     document_id = str(snapshot.metadata.get("id") or "document")
     source_id = "src_" + "".join(
@@ -242,8 +243,39 @@ def build_slide_planning_messages(
                 ]
             value["raw_context"] = filtered_context
         return value
+    narrative_contract = (
+        "\n\n# 发言稿优先叙事契约\n"
+        "speaker_manuscript 是在分页前生成并验证的完整发言稿，是栏目顺序、观点顺序和解释关系的唯一叙事来源。"
+        "必须保持 section 与 segment 的原始顺序，只能把相邻 segment 合并到同一页或拆成连续页面。"
+        "不得回到研报重新规划另一套叙事，不得遗漏重要 segment。"
+        "每个非封面页面必须输出 source_segment_ids。页面 section 使用发言稿中的 section_name；"
+        "title 可以是栏目主题、页面主题、问题或结论，不强制写成结论句。"
+        "key_message 与 bullet_points 只能压缩对应 segment 的内容。"
+        if speaker_manuscript is not None
+        else ""
+    )
+    document_structure_contract = (
+        "section_catalog 只用于核验 source_section_refs 和原生证据归属。页面必须保持发言稿栏目与 segment 顺序，"
+        "允许发言稿为清晰汇报而重组原研报章节。页面 title 不要求逐字复制原研报章节标题。"
+        if speaker_manuscript is not None
+        else "只能使用 section_catalog 中存在的 section_ref；不得新增章节或改变章节顺序。"
+        "所有带 section_ref 的 slide，其 title 必须逐字复制 section_catalog 对应条目的 title，"
+        "包括章节编号和标点；不得使用结论式标题或同义改写。"
+    )
+    speaker_priority_contract = (
+        "\n\n# Speaker-manuscript override (highest narrative priority)\n"
+        "When speaker_manuscript is present, it overrides any instruction that requires "
+        "the deck to preserve the report's section order, source section titles, or first "
+        "topic sentence verbatim. Preserve the manuscript's section and segment order instead. "
+        "Every section or content slide must provide source_segment_ids; title and closing slides "
+        "are exempt. A slide title may be a module label, topic, question, or conclusion.\n"
+        if speaker_manuscript is not None
+        else ""
+    )
     system_content = (
         system_prompt
+        + narrative_contract
+        + speaker_priority_contract
         + "\n\n# 指令优先级（发生冲突时必须按此顺序执行）\n"
         + "1. slide_outline.schema.json JSON Schema。\n"
         + "2. 应用提供的 DocumentBundle、section_catalog、figure_inventory、"
@@ -254,9 +286,7 @@ def build_slide_planning_messages(
         + "6. 一般写作习惯或模型偏好。\n"
         + "如果 case 示例与当前文档、Schema 或硬规则不一致，必须忽略 case 中冲突的部分。"
         + "\n\n# DocumentBundle 章节与证据约束\n"
-        + "只能使用 section_catalog 中存在的 section_ref；不得新增章节或改变章节顺序。"
-        + "所有带 section_ref 的 slide，其 title 必须逐字复制 section_catalog 对应条目的 title，"
-        + "包括章节编号和标点；不得使用结论式标题或同义改写。"
+        + document_structure_contract
         + "正文 key_message 优先保留证据中的第一句主旨句，后续信息才允许提炼为 bullet_points。"
         + "正文应保持适合演示文稿的低密度；编译器会依据实际布局容量自动分页，"
         + "不得为了控制篇幅直接丢弃有证据支撑的重要内容。"
@@ -298,16 +328,19 @@ def build_slide_planning_messages(
         "front_matter_summary": front_summary,
         "figure_inventory": figure_inventory,
         "runtime_context_memories": [planning_memory(memory) for memory in runtime_memories],
+        "speaker_manuscript": dict(speaker_manuscript) if speaker_manuscript else None,
         "constraints": {
-            "preserve_section_hierarchy": True,
-            "preserve_section_order": True,
+            "preserve_section_hierarchy": speaker_manuscript is None,
+            "preserve_section_order": speaker_manuscript is None,
             "no_new_sections": True,
-            "preserve_source_section_title_verbatim": True,
+            "preserve_source_section_title_verbatim": speaker_manuscript is None,
             "prefer_first_topic_sentence_verbatim": True,
             "content_slides_require_evidence": True,
             "preserve_front_matter_summary": bool(front_summary["required"]),
             "figure_page_one_figure_only": True,
             "preserve_figure_order": True,
+            "speaker_manuscript_is_narrative_source": speaker_manuscript is not None,
+            "preserve_speaker_segment_order": speaker_manuscript is not None,
         },
     }
     return [

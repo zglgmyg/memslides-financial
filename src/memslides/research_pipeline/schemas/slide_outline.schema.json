@@ -271,6 +271,15 @@
           },
           "uniqueItems": true
         },
+        "source_segment_ids": {
+          "type": "array",
+          "description": "该页承接的 speaker manuscript segment_id，顺序必须与发言稿一致。",
+          "items": {
+            "type": "string",
+            "pattern": "^segment_[0-9]{3,}$"
+          },
+          "uniqueItems": true
+        },
         "layout_hint": {
           "type": "string",
           "description": "非强制布局建议；不对应具体模板 layout_id，最终模板选择由 T2.5 决定。",

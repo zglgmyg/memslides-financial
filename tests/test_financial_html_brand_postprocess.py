@@ -14,11 +14,11 @@ def test_optional_html_branding_runs_before_export_and_is_idempotent(tmp_path: P
     slides = tmp_path / "outputs"
     slides.mkdir()
     (slides / "slide_01.html").write_text(
-        '<html><body data-page-role="title" style="background:#1E3A5F;color:#FFFFFF">Cover</body></html>',
+        '<html><body data-page-role="title" data-slide-id="slide_01" style="background:#1E3A5F;color:#FFFFFF">Cover</body></html>',
         encoding="utf-8",
     )
     (slides / "slide_02.html").write_text(
-        """<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">
+        """<html><body data-page-role="content" data-slide-id="slide_02" style="background:#1E3A5F;color:#FFFFFF">
         <div style="position:absolute;left:8%;top:12%;background:#1E3A5F;color:#FFFFFF">
           Freely placed title
         </div><div style="background:#DBEAFE;border:1px solid #CBD5E1;color:#475569">Body</div>
@@ -26,7 +26,7 @@ def test_optional_html_branding_runs_before_export_and_is_idempotent(tmp_path: P
         encoding="utf-8",
     )
     (slides / "slide_03.html").write_text(
-        '<html><body data-page-role="closing" style="background:rgb(30,58,95);color:#FFFFFF">End</body></html>',
+        '<html><body data-page-role="closing" data-slide-id="slide_03" style="background:rgb(30,58,95);color:#FFFFFF">End</body></html>',
         encoding="utf-8",
     )
     roles = ["title", "content", "closing"]
