@@ -118,6 +118,64 @@ def artifacts() -> list[Artifact]:
     ]
 
 
+def speaker_manuscript() -> dict[str, Any]:
+    return {
+        "schema_version": "2.0.0",
+        "metadata": {
+            "title": "测试研报发言稿",
+            "audience": "投资研究汇报听众",
+            "presentation_purpose": "讲清经营表现",
+            "estimated_total_minutes": 5,
+        },
+        "opening": "先说明本次汇报范围。",
+        "slides": [
+            {
+                "slide_id": "slide_000",
+                "slide_title": "测试报告",
+                "narrative_role": "opening",
+                "script": "介绍本次报告。",
+                "transition_to_next": "接下来查看收入趋势。",
+                "evidence_refs": [],
+                "estimated_seconds": 20,
+            },
+            {
+                "slide_id": "slide_001",
+                "slide_title": "收入趋势",
+                "narrative_role": "fact",
+                "script": "收入保持增长。",
+                "transition_to_next": "",
+                "evidence_refs": [{"kind": "table", "id": "table-001"}],
+                "estimated_seconds": 40,
+            },
+        ],
+        "closing": "以上是本次汇报的主要内容。",
+    }
+
+
+def narrative_plan() -> dict[str, Any]:
+    return {
+        "schema_version": "1.0.0",
+        "title": "测试报告",
+        "audience": "投资研究汇报听众",
+        "presentation_purpose": "讲清经营表现",
+        "thesis": "收入保持增长。",
+        "sections": [
+            {
+                "section_goal": "说明收入变化",
+                "source_section_refs": ["sec-001"],
+                "key_claims": [
+                    {
+                        "claim": "收入保持增长。",
+                        "evidence_refs": [{"kind": "table", "id": "table-001"}],
+                    }
+                ],
+                "transition_intent": "进入总结。",
+            }
+        ],
+        "closing_message": "总结收入趋势。",
+    }
+
+
 def test_exporter_publishes_financial_adapter_layout(tmp_path: Path) -> None:
     output = tmp_path / "research-run"
     result = export_research_run(
@@ -127,6 +185,9 @@ def test_exporter_publishes_financial_adapter_layout(tmp_path: Path) -> None:
         artifacts=artifacts(),
         document_bundle_directory=tmp_path,
         document_source_sha256="a" * 64,
+        narrative_plan=narrative_plan(),
+        speaker_manuscript=speaker_manuscript(),
+        speaker_manuscript_markdown="# 测试讲稿\n",
     )
 
     assert result == output.resolve()
@@ -173,6 +234,9 @@ def test_exporter_copies_images_into_portable_asset_root(tmp_path: Path) -> None
         artifacts=[image_artifact],
         document_bundle_directory=bundle,
         document_source_sha256="b" * 64,
+        narrative_plan=narrative_plan(),
+        speaker_manuscript=speaker_manuscript(),
+        speaker_manuscript_markdown="# 测试讲稿\n",
     )
 
     assert (output / "visualizations/images/figure_001.png").read_bytes() == b"png"
@@ -195,17 +259,25 @@ def test_exporter_rejects_duplicate_series_names(tmp_path: Path) -> None:
             artifacts=bad_artifacts,
             document_bundle_directory=tmp_path,
             document_source_sha256="c" * 64,
+            narrative_plan=narrative_plan(),
+            speaker_manuscript=speaker_manuscript(),
+            speaker_manuscript_markdown="# 测试讲稿\n",
         )
 
 
 def test_exported_run_is_consumed_by_financial_adapter(tmp_path: Path) -> None:
+    speaker = speaker_manuscript()
+    deck_outline = outline()
     research_run = export_research_run(
         output_directory=tmp_path / "research-run",
-        outline=outline(),
+        outline=deck_outline,
         numeric_audit=audit("visual_chart", "visual_table"),
         artifacts=artifacts(),
         document_bundle_directory=tmp_path,
         document_source_sha256="d" * 64,
+        narrative_plan=narrative_plan(),
+        speaker_manuscript=speaker,
+        speaker_manuscript_markdown="# 测试研报发言稿\n",
     )
 
     def renderer(**kwargs: Any) -> dict[str, Any]:
@@ -235,3 +307,12 @@ def test_exported_run_is_consumed_by_financial_adapter(tmp_path: Path) -> None:
     assert result.asset_count == 2
     assert result.manuscript.is_file()
     assert result.evidence_manifest.is_file()
+    assert (research_run / "speaker_manuscript.json").is_file()
+    assert (research_run / "speaker_manuscript.md").read_text(encoding="utf-8") == (
+        "# 测试研报发言稿\n"
+    )
+    mapped_script = (tmp_path / "memslides-workspace/speaker_script_by_slide.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## 第2页｜收入趋势" in mapped_script
+    assert "以上是本次汇报的主要内容。" in mapped_script

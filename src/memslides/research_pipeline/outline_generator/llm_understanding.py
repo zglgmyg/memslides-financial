@@ -189,6 +189,7 @@ def build_slide_planning_messages(
     schema: Mapping[str, Any],
     few_shot: Mapping[str, Any],
     system_prompt: str,
+    narrative_plan: Mapping[str, Any],
 ) -> list[dict[str, str]]:
     document_id = str(snapshot.metadata.get("id") or "document")
     source_id = "src_" + "".join(
@@ -290,6 +291,14 @@ def build_slide_planning_messages(
         + "Each runtime_context_memories entry is either direct deterministic source "
         + "context in raw_context or an LLM-compressed semantic memory. Treat "
         + "evidence_refs as application-owned provenance in both modes."
+        + "\n\n# Narrative Plan advisory contract\n"
+        + "Use narrative_plan only to understand the central thesis, section goals, "
+        + "claim priorities, and transition intent. It does not define slide boundaries, "
+        + "page counts, page titles, layouts, or visual types. DocumentBundle, section_catalog, "
+        + "runtime_context_memories, evidence rules, and the outline schema remain authoritative. "
+        + "Preserve source section order and choose slide boundaries from evidence density and "
+        + "presentation needs. Do not copy transition prose into slide content unless supported "
+        + "by the cited source evidence."
     )
     payload = {
         "task": "slide_planning_from_runtime_context",
@@ -299,6 +308,7 @@ def build_slide_planning_messages(
         "front_matter_summary": front_summary,
         "figure_inventory": figure_inventory,
         "runtime_context_memories": [planning_memory(memory) for memory in runtime_memories],
+        "narrative_plan": dict(narrative_plan),
         "constraints": {
             "preserve_section_hierarchy": True,
             "preserve_section_order": True,
@@ -309,6 +319,7 @@ def build_slide_planning_messages(
             "preserve_front_matter_summary": bool(front_summary["required"]),
             "figure_page_one_figure_only": True,
             "preserve_figure_order": True,
+            "narrative_plan_is_advisory": True,
         },
     }
     return [

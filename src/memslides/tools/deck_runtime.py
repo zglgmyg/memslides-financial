@@ -9654,6 +9654,12 @@ def list_files(directory: str = ".", max_depth: int = 2) -> str:
             # Skip hidden files and __pycache__
             if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
                 continue
+            if (
+                _is_financial_internal_control_file(p)
+                or _is_financial_manuscript(p)
+                or _is_financial_redundant_design_input(p)
+            ):
+                continue
             prefix = "  " * (len(rel.parts) - 1)
             if p.is_file():
                 size = p.stat().st_size
@@ -9672,6 +9678,125 @@ def list_files(directory: str = ".", max_depth: int = 2) -> str:
         return f"Files in '{directory}':\n" + "\n".join(lines)
     except Exception as e:
         return f"Error listing files: {e}"
+
+
+def compact_verified_asset_index(
+    manifest_path: Path, workspace: Path
+) -> list[dict[str, Any]]:
+    """Return the bounded, complete verified-asset view exposed to DeckDesigner."""
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    compact: list[dict[str, Any]] = []
+    for asset in payload.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        verification = asset.get("verification")
+        if not isinstance(verification, dict) or verification.get("status") != "passed":
+            continue
+        asset_path = Path(str(asset.get("path", "") or ""))
+        if not asset_path.is_absolute():
+            asset_path = manifest_path.parent / asset_path
+        asset_path = asset_path.resolve()
+        try:
+            relative_path = asset_path.relative_to(workspace.resolve()).as_posix()
+        except ValueError:
+            continue
+        width = height = None
+        try:
+            with Image.open(asset_path) as image:
+                width, height = image.size
+        except (OSError, ValueError):
+            pass
+        compact.append(
+            {
+                "slide_id": str(verification.get("slide_id", "") or ""),
+                "visualization_id": str(verification.get("visualization_id", "") or ""),
+                "title": str(asset.get("caption", "") or ""),
+                "kind": str(asset.get("kind", "") or "figure"),
+                "width": width,
+                "height": height,
+                "path": relative_path,
+            }
+        )
+    return compact
+
+
+def _is_financial_internal_control_file(path: Path) -> bool:
+    """Keep financial orchestration state out of the DeckDesigner tool surface."""
+
+    if get_current_agent().strip().lower() != "deckdesigner":
+        return False
+    try:
+        workspace = _resolve_workspace_root(anchor=path)
+        state_file = workspace / "deck_execution_state.json"
+        if not state_file.is_file():
+            return False
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("source_mode") != "financial_page_packets":
+            return False
+        resolved = path.resolve()
+        internal_paths = {
+            state_file.resolve(),
+            (workspace / _DESIGN_PLAN_STATE_FILE).resolve(),
+            (workspace / _CONTROL_DOCUMENT_STATE_FILE).resolve(),
+            (workspace / ".runtime" / "financial_source_packets.json").resolve(),
+        }
+        return resolved in internal_paths
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _is_financial_manuscript(path: Path) -> bool:
+    """Identify the source file replaced by financial page-source injection."""
+
+    if get_current_agent().strip().lower() != "deckdesigner":
+        return False
+    try:
+        workspace = _resolve_workspace_root(anchor=path)
+        state_file = workspace / "deck_execution_state.json"
+        if not state_file.is_file():
+            return False
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("source_mode") != "financial_page_packets":
+            return False
+        source_label = str(state.get("source_path", "") or "").strip()
+        if not source_label:
+            return path.name.lower() == "manuscript.md"
+        source_path = Path(source_label)
+        if not source_path.is_absolute():
+            source_path = workspace / source_path
+        return source_path.resolve() == path.resolve()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _is_financial_redundant_design_input(path: Path) -> bool:
+    """Hide inputs already represented by the financial runtime packet."""
+
+    if get_current_agent().strip().lower() != "deckdesigner":
+        return False
+    try:
+        workspace = _resolve_workspace_root(anchor=path)
+        state_file = workspace / "deck_execution_state.json"
+        if not state_file.is_file():
+            return False
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("source_mode") != "financial_page_packets":
+            return False
+        relative = path.resolve().relative_to(workspace.resolve())
+        if relative.parts and relative.parts[0] == "generated_visuals":
+            return path.suffix.lower() == ".json"
+        return relative.as_posix().lower() in {
+            "asset_manifest.json",
+            "financial_evidence_manifest.json",
+            "intermediate_output.json",
+            "resolved_intent.json",
+            "speaker_manuscript.json",
+            "speaker_manuscript.md",
+            "speaker_script_by_slide.md",
+            "template_match.json",
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
 
 
 @mcp.tool()
@@ -9694,6 +9819,87 @@ def read_file(file_path: str, offset: int = 0, limit: int = 500) -> str:
             return f"File not found: {file_path}"
         if not path.is_file():
             return f"Not a file: {file_path}"
+
+        if _is_financial_internal_control_file(path):
+            return (
+                "Internal financial execution state is not a design input. "
+                "Use the runtime-provided `<design_plan_progress>`, `<deck_progress>`, "
+                "and `<current_page_source>` instead."
+            )
+
+        if _is_financial_manuscript(path):
+            return (
+                "Financial manuscript reads are disabled for DeckDesigner. "
+                "Use the runtime-provided `<financial_deck_source_index>` during planning "
+                "and `<current_page_source>` while writing slides."
+            )
+
+        if _is_financial_redundant_design_input(path):
+            return (
+                "This financial input is already represented in the runtime packet. "
+                "Use `<financial_deck_source_index>` and `<current_page_source>` instead."
+            )
+
+        if (
+            get_current_agent().strip().lower() == "deckdesigner"
+            and path.suffix.lower() == ".svg"
+        ):
+            meta_path = path.with_suffix(".meta.json")
+            if meta_path.is_file():
+                try:
+                    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+                    workspace_root = _resolve_workspace_root(anchor=path)
+                    primary_path = Path(str(metadata.get("primary_path", "") or path))
+                    if not primary_path.is_absolute():
+                        primary_path = (meta_path.parent / primary_path).resolve()
+                    try:
+                        primary_label = primary_path.relative_to(
+                            workspace_root.resolve()
+                        ).as_posix()
+                    except ValueError:
+                        primary_label = path.relative_to(
+                            workspace_root.resolve()
+                        ).as_posix()
+                    summary = {
+                        "kind": str(metadata.get("kind", "") or "visual"),
+                        "title": str(metadata.get("title", "") or ""),
+                        "width": metadata.get("recommended_width"),
+                        "height": metadata.get("recommended_height"),
+                        "primary_path": primary_label,
+                        "preferred_pptx_export": str(
+                            metadata.get("preferred_pptx_export", "") or ""
+                        ),
+                    }
+                    return (
+                        "Structured visual metadata (complete; raw single-line SVG "
+                        "source omitted; use the primary path and do not reread the SVG):\n"
+                        + json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                    )
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+        if (
+            get_current_agent().strip().lower() == "deckdesigner"
+            and path.name == "asset_manifest.json"
+        ):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict) and any(
+                    isinstance(asset, dict)
+                    and isinstance(asset.get("verification"), dict)
+                    and asset["verification"].get("status") == "passed"
+                    for asset in payload.get("assets", [])
+                ):
+                    compact = compact_verified_asset_index(
+                        path, _resolve_workspace_root(anchor=path)
+                    )
+                    return (
+                        "Compact verified asset index (complete; offset/limit ignored; "
+                        "do not reread):\n"
+                        + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+                    )
+            except (OSError, json.JSONDecodeError):
+                pass
 
         # Only allow text files
         text_exts = {".html", ".htm", ".css", ".js", ".md", ".txt", ".json",

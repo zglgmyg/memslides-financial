@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from memslides.research_pipeline.document_bundle.errors import DocumentBundleError
 from memslides.research_pipeline.document_parser.parse_report import parse_file
 
 
@@ -23,6 +25,69 @@ _SUPPORTED_IMAGE_SUFFIXES = {
     ".tiff",
     ".webp",
 }
+
+
+def _match_pdf_figure(
+    alt_text: str,
+    pdf_document: dict[str, Any],
+    used_figure_ids: set[str],
+) -> dict[str, Any]:
+    def normalized(value: object) -> str:
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(value or "")).casefold()
+
+    target = normalized(alt_text)
+    blocks = {str(block.get("id")): block for block in pdf_document.get("blocks", [])}
+    matches: list[dict[str, Any]] = []
+    for figure in pdf_document.get("figures", []):
+        if str(figure.get("id")) in used_figure_ids:
+            continue
+        caption = " ".join(
+            str(blocks.get(str(block_id), {}).get("text_raw") or "")
+            for block_id in figure.get("caption_block_ids", [])
+        )
+        candidate = normalized(caption)
+        if target and candidate and (target in candidate or candidate in target):
+            matches.append(figure)
+    if len(matches) != 1:
+        raise DocumentBundleError(
+            f"Markdown chart {alt_text!r} matched {len(matches)} PDF figures; expected exactly one"
+        )
+    return matches[0]
+
+
+def _materialize_pdf_figure(
+    *,
+    alt_text: str,
+    figure_id: str,
+    bundle_directory: Path,
+    pdf_bundle_directory: Path,
+    pdf_document: dict[str, Any],
+    used_figure_ids: set[str],
+) -> tuple[str, dict[str, Any]]:
+    matched = _match_pdf_figure(alt_text, pdf_document, used_figure_ids)
+    pdf_figure_id = str(matched.get("id"))
+    relative = Path(str(matched.get("asset_path") or ""))
+    source = (pdf_bundle_directory / relative).resolve()
+    pdf_root = pdf_bundle_directory.resolve()
+    if (
+        not relative.as_posix()
+        or relative.is_absolute()
+        or pdf_root not in source.parents
+        or not source.is_file()
+    ):
+        raise DocumentBundleError(
+            f"Matched PDF figure has no usable asset: {pdf_figure_id}"
+        )
+    destination = (
+        bundle_directory
+        / "assets"
+        / "figures"
+        / f"{figure_id}-paired-pdf{source.suffix.casefold()}"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    used_figure_ids.add(pdf_figure_id)
+    return destination.relative_to(bundle_directory).as_posix(), matched
 
 
 def _materialize_markdown_image(
@@ -135,6 +200,8 @@ def build_from_markdown(
     data_id: str | None = None,
     *,
     source_format: str = "auto",
+    pdf_bundle_directory: Path | None = None,
+    pdf_document: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Create a line-located DocumentBundle without inventing PDF coordinates."""
 
@@ -151,6 +218,7 @@ def build_from_markdown(
     tables: list[dict[str, Any]] = []
     figures: list[dict[str, Any]] = []
     image_issues: list[dict[str, Any]] = []
+    used_pdf_figure_ids: set[str] = set()
     section_ids: dict[tuple[str, ...], str] = {}
     sections: list[dict[str, Any]] = []
 
@@ -224,12 +292,29 @@ def build_from_markdown(
             block["table_id"] = table_id
         elif source["type"] == "image":
             figure_id = f"fig-{len(figures) + 1:03d}"
-            asset_path, image_issue = _materialize_markdown_image(
-                source_path,
-                bundle_directory,
-                source.get("url"),
-                figure_id,
-            )
+            raw_reference = str(source.get("url") or "")
+            matched_pdf_figure: dict[str, Any] | None = None
+            if (
+                raw_reference.startswith("chart:")
+                and pdf_bundle_directory is not None
+                and pdf_document is not None
+            ):
+                asset_path, matched_pdf_figure = _materialize_pdf_figure(
+                    alt_text=str(source.get("alt_text") or ""),
+                    figure_id=figure_id,
+                    bundle_directory=bundle_directory,
+                    pdf_bundle_directory=pdf_bundle_directory,
+                    pdf_document=pdf_document,
+                    used_figure_ids=used_pdf_figure_ids,
+                )
+                image_issue = None
+            else:
+                asset_path, image_issue = _materialize_markdown_image(
+                    source_path,
+                    bundle_directory,
+                    source.get("url"),
+                    figure_id,
+                )
             if image_issue is not None:
                 image_issues.append(image_issue)
             figures.append(
@@ -243,9 +328,13 @@ def build_from_markdown(
                     "bbox": None,
                     "asset_path": asset_path,
                     "asset_available": asset_path is not None,
+                    "alt_text": source.get("alt_text"),
                     "source_reference": source.get("url"),
-                    "source": "markdown_reference",
+                    "source": "paired_pdf" if matched_pdf_figure else "markdown_reference",
                     "source_block_id": block["id"],
+                    "pdf_page": matched_pdf_figure.get("page") if matched_pdf_figure else None,
+                    "pdf_bbox": matched_pdf_figure.get("bbox") if matched_pdf_figure else None,
+                    "pdf_figure_id": matched_pdf_figure.get("id") if matched_pdf_figure else None,
                     "issues": [],
                 }
             )

@@ -3678,7 +3678,9 @@ class AgentLoop(_AgentLoopRuntimeBindings):
             yield item
 
     def save_results(self):
-        with open(self.workspace / "intermediate_output.json", "w") as f:
+        with open(
+            self.workspace / "intermediate_output.json", "w", encoding="utf-8"
+        ) as f:
             json.dump(
                 {k: str(v) for k, v in self.intermediate_output.items()},
                 f,
@@ -3792,14 +3794,14 @@ class AgentLoop(_AgentLoopRuntimeBindings):
         if not output_file.exists():
             warning(f"intermediate_output.json not found in {workspace}")
             return None
-        with open(output_file) as f:
+        with open(output_file, encoding="utf-8") as f:
             self.intermediate_output = json.load(f)
         info(f"Loaded intermediate_output: {list(self.intermediate_output.keys())}")
 
         # 3. Load original request
         request_file = workspace / ".input_request.json"
         if request_file.exists():
-            with open(request_file) as f:
+            with open(request_file, encoding="utf-8") as f:
                 self._last_request = InputRequest(**json.load(f))
             self._freeze_preference_writeback_current_job = (
                 self._should_freeze_preference_writeback(self._last_request)

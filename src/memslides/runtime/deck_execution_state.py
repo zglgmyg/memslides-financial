@@ -12,6 +12,7 @@ from filelock import FileLock
 
 
 DECK_EXECUTION_STATE_FILE = "deck_execution_state.json"
+FINANCIAL_SOURCE_PACKET_FILE = ".runtime/financial_source_packets.json"
 
 
 def _workspace(workspace: Path | str | None = None) -> Path:
@@ -25,6 +26,23 @@ def _workspace(workspace: Path | str | None = None) -> Path:
 
 def state_path(workspace: Path | str | None = None) -> Path:
     return _workspace(workspace) / DECK_EXECUTION_STATE_FILE
+
+
+def financial_source_packet_path(workspace: Path | str | None = None) -> Path:
+    return _workspace(workspace) / FINANCIAL_SOURCE_PACKET_FILE
+
+
+def load_financial_source_packets(
+    workspace: Path | str | None = None,
+) -> dict[str, Any] | None:
+    path = financial_source_packet_path(workspace)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _now() -> str:
@@ -181,11 +199,17 @@ def _build_slide_entry(
     html_exists: bool,
     slide_seed: dict[str, Any] | None = None,
     profile_page: dict[str, Any] | None = None,
+    source_metadata: dict[str, Any] | None = None,
     mode: str = "non_template",
 ) -> dict[str, Any]:
     seed = slide_seed or {}
     persona = profile_page or {}
-    title = _coerce_string(seed.get("title", "")) or _coerce_string(persona.get("page_role", ""))
+    source = source_metadata or {}
+    title = (
+        _coerce_string(seed.get("title", ""))
+        or _coerce_string(source.get("title", ""))
+        or _coerce_string(persona.get("page_role", ""))
+    )
     entry = {
         "page": page,
         "title": title,
@@ -205,7 +229,7 @@ def _build_slide_entry(
         "accepted": False,
         "status": "html_written" if html_exists else "planned",
         "contract_mode": mode,
-        "page_role": _coerce_string(persona.get("page_role", "")),
+        "page_role": _coerce_string(persona.get("page_role", "")) or _coerce_string(source.get("page_role", "")),
         "persona_signal": _coerce_string(persona.get("persona_signal", "")),
         "manuscript_anchor": _coerce_string(persona.get("manuscript_anchor", "")),
         "required_component": _coerce_string(persona.get("required_component", "")),
@@ -236,6 +260,7 @@ def initialize_deck_execution_state(
     expected_slide_count: int | None = None,
     slide_dir: str = "outputs",
     profile_execution_plan: dict[str, Any] | None = None,
+    source_bundle: dict[str, Any] | None = None,
 ) -> Path:
     """Create a concise page work queue for template-driven DeckDesigner runs."""
 
@@ -252,6 +277,16 @@ def initialize_deck_execution_state(
 
     slides_payload = mapping.get("slides", []) if isinstance(mapping, dict) else []
     profile_by_page = _profile_page_map(profile_execution_plan)
+    source_index = (
+        source_bundle.get("source_index", [])
+        if isinstance(source_bundle, dict) and isinstance(source_bundle.get("source_index"), list)
+        else []
+    )
+    source_by_page = {
+        str(_coerce_page(item.get("page"))): item
+        for item in source_index
+        if isinstance(item, dict) and _coerce_page(item.get("page")) > 0
+    }
     mode = "template" if layout_mapping_path else "non_template"
     slides: dict[str, dict[str, Any]] = {}
     for idx, slide in enumerate(slides_payload or [], 1):
@@ -266,6 +301,7 @@ def initialize_deck_execution_state(
             html_exists=html_path.exists(),
             slide_seed=slide,
             profile_page=profile_by_page.get(page),
+            source_metadata=source_by_page.get(str(page)),
             mode=mode,
         )
 
@@ -281,6 +317,7 @@ def initialize_deck_execution_state(
                 html_exists=html_path.exists(),
                 slide_seed={},
                 profile_page=profile_by_page.get(page),
+                source_metadata=source_by_page.get(str(page)),
                 mode=mode,
             )
 
@@ -289,6 +326,16 @@ def initialize_deck_execution_state(
     state["slide_dir"] = slide_dir
     state["mode"] = mode
     state["slides"] = slides
+    if isinstance(source_bundle, dict):
+        packet_path = financial_source_packet_path(ws)
+        packet_path.parent.mkdir(parents=True, exist_ok=True)
+        packet_path.write_text(
+            json.dumps(source_bundle, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        state["source_mode"] = _coerce_string(source_bundle.get("mode", ""))
+        state["source_path"] = _coerce_string(source_bundle.get("source_path", ""))
+        state["source_sha256"] = _coerce_string(source_bundle.get("source_sha256", ""))
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(path) + ".lock", timeout=5)
     with lock:
@@ -535,12 +582,21 @@ def record_persona_repair_backup(
 
 
 def current_page_contract(workspace: Path | str | None = None) -> dict[str, Any]:
+    execution_state = load_deck_execution_state(workspace) or {}
     summary = deck_progress_summary(workspace)
     if not summary.get("active"):
         return {}
     page = summary.get("next_page", {}) or {}
     if not page:
         return {}
+    source_packet: dict[str, Any] = {}
+    if execution_state.get("source_mode") == "financial_page_packets":
+        packet_store = load_financial_source_packets(workspace) or {}
+        packet_pages = packet_store.get("pages", {})
+        if isinstance(packet_pages, dict):
+            candidate = packet_pages.get(str(int(page.get("page", 0) or 0)), {})
+            if isinstance(candidate, dict):
+                source_packet = candidate
     return {
         "page_index": int(page.get("page", 0) or 0),
         "page_title": _coerce_string(page.get("title", "")),
@@ -561,6 +617,7 @@ def current_page_contract(workspace: Path | str | None = None) -> dict[str, Any]
         "persona_status": _coerce_string(page.get("persona_status", "pending")),
         "persona_retry_count": int(page.get("persona_retry_count", 0) or 0),
         "contract_mode": _coerce_string(page.get("contract_mode", "")),
+        "source_packet": source_packet,
     }
 
 
@@ -587,12 +644,23 @@ def deck_progress_summary(workspace: Path | str | None = None) -> dict[str, Any]
 
     next_action = ""
     next_page: dict[str, Any] | None = None
-    for slide in ordered:
-        if not slide.get("html_written"):
-            next_page = slide
-            next_action = "write_html"
-            break
-    if next_page is None:
+    if state.get("source_mode") == "financial_page_packets":
+        for slide in ordered:
+            if not slide.get("html_written"):
+                next_page = slide
+                next_action = "write_html"
+                break
+            if not slide.get("accepted"):
+                next_page = slide
+                next_action = "inspect_or_fix"
+                break
+    else:
+        for slide in ordered:
+            if not slide.get("html_written"):
+                next_page = slide
+                next_action = "write_html"
+                break
+    if next_page is None and state.get("source_mode") != "financial_page_packets":
         for slide in ordered:
             if slide.get("html_written") and not slide.get("inspected"):
                 next_page = slide
@@ -627,6 +695,51 @@ def deck_progress_summary(workspace: Path | str | None = None) -> dict[str, Any]
 
 
 def render_deck_progress_prompt(workspace: Path | str | None = None) -> str:
+    execution_state = load_deck_execution_state(workspace) or {}
+    source_index_prompt = ""
+    if execution_state.get("source_mode") == "financial_page_packets":
+        packet_store = load_financial_source_packets(workspace) or {}
+        source_index = packet_store.get("source_index", [])
+        if isinstance(source_index, list) and source_index:
+            source_index_prompt = (
+                "\n<financial_deck_source_index>\n"
+                + json.dumps(source_index, ensure_ascii=False, separators=(",", ":"))
+                + "\n</financial_deck_source_index>"
+            )
+
+    design_plan_state_path = _workspace(workspace) / ".design_plan_state.json"
+    if design_plan_state_path.is_file():
+        try:
+            design_plan_state = json.loads(
+                design_plan_state_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            design_plan_state = {}
+        if (
+            isinstance(design_plan_state, dict)
+            and design_plan_state.get("requires_refinement")
+            and design_plan_state.get("status") != "unlocked"
+        ):
+            current_hash = str(design_plan_state.get("current_hash", "") or "")
+            scaffold_hash = str(design_plan_state.get("scaffold_hash", "") or "")
+            if scaffold_hash and current_hash == scaffold_hash:
+                next_action = (
+                    "refine `design_plan.md` with `write_markdown_file`, then read "
+                    "the updated file back with `read_file`"
+                )
+            else:
+                next_action = (
+                    "read the latest `design_plan.md` back with `read_file` before "
+                    "writing slide HTML"
+                )
+            return (
+                "<design_plan_progress>\n"
+                f"status={design_plan_state.get('status') or 'refinement_required'}\n"
+                f"next_action={next_action}\n"
+                "</design_plan_progress>"
+                + source_index_prompt
+            )
+
     summary = deck_progress_summary(workspace)
     if not summary.get("active"):
         return ""
@@ -634,10 +747,10 @@ def render_deck_progress_prompt(workspace: Path | str | None = None) -> str:
     next_page = summary.get("next_page", {}) or {}
     next_line = "finalize the deck"
     if summary.get("next_action") == "write_html":
-        next_line = (
-            f"write `{next_page.get('file')}` using layout "
-            f"`{next_page.get('selected_layout') or 'from layout_mapping.yaml'}`"
-        )
+        selected_layout = str(next_page.get("selected_layout") or "").strip()
+        next_line = f"write `{next_page.get('file')}`"
+        if selected_layout:
+            next_line += f" using layout `{selected_layout}`"
     elif summary.get("next_action") == "inspect_or_fix":
         next_line = f"inspect or fix `{next_page.get('file')}`"
 
@@ -650,6 +763,7 @@ def render_deck_progress_prompt(workspace: Path | str | None = None) -> str:
         )
     current_contract = current_page_contract(workspace)
     contract_lines: list[str] = []
+    source_packet_lines: list[str] = []
     if current_contract:
         contract_lines.extend(
             [
@@ -702,6 +816,15 @@ def render_deck_progress_prompt(workspace: Path | str | None = None) -> str:
                 "repair_instruction=replace the complete slide HTML; do not append large fragments with apply_slide_patch"
             )
         contract_lines.append("</current_page_contract>")
+        source_packet = current_contract.get("source_packet", {})
+        if isinstance(source_packet, dict) and source_packet:
+            source_packet_lines.extend(
+                [
+                    "<current_page_source>",
+                    json.dumps(source_packet, ensure_ascii=False, separators=(",", ":")),
+                    "</current_page_source>",
+                ]
+            )
 
     prompt = (
         "<deck_progress>\n"
@@ -713,6 +836,8 @@ def render_deck_progress_prompt(workspace: Path | str | None = None) -> str:
     )
     if contract_lines:
         prompt += "\n" + "\n".join(contract_lines)
+    if source_packet_lines:
+        prompt += "\n" + "\n".join(source_packet_lines)
     return prompt
 
 

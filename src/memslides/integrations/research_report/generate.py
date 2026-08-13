@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,28 @@ def _outline_page_roles(outline_path: Path, expected_count: int) -> list[str]:
     return roles
 
 
+def _outline_page_titles(outline_path: Path, expected_count: int) -> list[str]:
+    outline = _read_object(outline_path, "slide_outline.json")
+    slides = outline.get("slides")
+    if not isinstance(slides, list) or len(slides) != expected_count:
+        raise FinancialGenerationError(
+            "slide_outline.json page count does not match the audited handoff."
+        )
+    titles = [
+        str(slide.get("title", "") or "").strip()
+        if isinstance(slide, dict)
+        else ""
+        for slide in slides
+    ]
+    missing = [str(index) for index, title in enumerate(titles, start=1) if not title]
+    if missing:
+        raise FinancialGenerationError(
+            "Financial outline pages must declare a non-empty title; missing pages="
+            + ",".join(missing)
+        )
+    return titles
+
+
 def _financial_design_guidance(page_roles: list[str]) -> str:
     role_map = "\n".join(
         f"- Page {page_number}: `page_role={role}`"
@@ -128,7 +151,16 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
    bound visual assets. Change presentation design only.
 2. Preserve this page-role map exactly:
 {role_map}
-3. Every content page must place its visible page title in exactly one element marked
+3. Every HTML body must declare its exact role with
+   `data-page-role="title|content|closing"` and its immutable page identity with
+   `data-slide-id="slide_XX"`, matching its filename and the corresponding manuscript
+   page. Do not move, copy, merge, or reuse content between slide identities. When a
+   page needs a structural correction, replace that page's complete HTML through the
+   controlled `write_html_file(force_regenerate=true, expected_hash=...)` flow; never
+   append a second version of its title, body, chart, or table.
+   Title and closing pages must use distinct compositions and must not contain an
+   element marked `data-financial-role="content-title-bar"`.
+   Every content page must place its visible page title in exactly one element marked
    `data-financial-role="content-title-bar"`. The title bar must span the full page width,
    sit flush against the top, left, and right page edges with no outer whitespace, use a
    #1E3A5F blue background with white title text, and reserve its height before laying out
@@ -169,18 +201,66 @@ def _validate_financial_html_contract(
             violations.append(
                 f"{name}: data-page-role={actual_role or '<missing>'}, expected={expected_role}"
             )
-
-        if expected_role == "content" and not re.search(
-            r"\bdata-financial-role\s*=\s*(['\"])content-title-bar\1",
-            html,
+        slide_id_match = re.search(
+            r"\bdata-slide-id\s*=\s*(['\"])(?P<slide_id>[^'\"]+)\1",
+            body_attrs,
             flags=re.I,
-        ):
+        )
+        actual_slide_id = (
+            slide_id_match.group("slide_id").strip().lower() if slide_id_match else ""
+        )
+        expected_slide_id = f"slide_{page_number:02d}"
+        if actual_slide_id != expected_slide_id:
+            violations.append(
+                f"{name}: data-slide-id={actual_slide_id or '<missing>'}, "
+                f"expected={expected_slide_id}"
+            )
+
+        has_content_title_bar = bool(
+            re.search(
+                r"\bdata-financial-role\s*=\s*(['\"])content-title-bar\1",
+                html,
+                flags=re.I,
+            )
+        )
+        if expected_role == "content" and not has_content_title_bar:
             violations.append(f"{name}: content page is missing its title bar marker")
+        elif expected_role in {"title", "closing"} and has_content_title_bar:
+            violations.append(f"{name}: {expected_role} page must not use a content title bar")
 
     if violations:
         raise FinancialGenerationError(
             "DeckDesigner violated the financial HTML contract: " + "; ".join(violations)
         )
+
+
+def _duplicate_visible_text_fragments(html: str) -> list[str]:
+    """Return repeated, substantial visible text fragments within one slide.
+
+    This deliberately ignores short labels/numbers, which are commonly repeated in
+    tables and charts. It catches the failure mode where a repair leaves a second
+    title or body text box on the same page.
+    """
+    body_match = re.search(r"<body\b[^>]*>(.*?)</body>", html, flags=re.I | re.S)
+    if not body_match:
+        return []
+    body = re.sub(
+        r"<(?:script|style)\b[^>]*>.*?</(?:script|style)>",
+        "",
+        body_match.group(1),
+        flags=re.I | re.S,
+    )
+    fragments = [
+        re.sub(r"\s+", " ", unescape(fragment)).strip()
+        for fragment in re.findall(r">([^<>]+)<", body)
+    ]
+    counts: dict[str, int] = {}
+    for fragment in fragments:
+        # Short labels, dates, and values are valid repeated content in tables.
+        if len(fragment) < 12 or not re.search(r"[A-Za-z\u4e00-\u9fff]", fragment):
+            continue
+        counts[fragment] = counts.get(fragment, 0) + 1
+    return sorted(fragment for fragment, count in counts.items() if count > 1)
 
 
 def _validate_slide_html_dir(
@@ -193,6 +273,7 @@ def _validate_slide_html_dir(
 
     missing: list[str] = []
     invalid: list[str] = []
+    duplicates: list[str] = []
     for page_number in range(1, expected_count + 1):
         name = f"slide_{page_number:02d}.html"
         path = slide_html_dir / name
@@ -215,6 +296,10 @@ def _validate_slide_html_dir(
             body_text = re.sub(r"\s+", " ", body_text).strip()
         if placeholder or not has_body or (not body_text and not has_visual):
             invalid.append(name)
+            continue
+        repeated = _duplicate_visible_text_fragments(html)
+        if repeated:
+            duplicates.append(f"{name}=" + " | ".join(repeated[:3]))
 
     if missing or invalid:
         details: list[str] = []
@@ -224,6 +309,11 @@ def _validate_slide_html_dir(
             details.append("blank_or_placeholder=" + ",".join(invalid))
         raise FinancialGenerationError(
             "DeckDesigner produced an incomplete slide HTML set: " + "; ".join(details)
+        )
+    if duplicates:
+        raise FinancialGenerationError(
+            "DeckDesigner produced duplicate visible text on a slide; "
+            "regenerate the affected page instead of exporting: " + "; ".join(duplicates)
         )
     if page_roles is not None:
         _validate_financial_html_contract(
@@ -286,6 +376,7 @@ async def generate_financial_deck(
     if generation_timeout <= 0:
         raise FinancialGenerationError("generation_timeout must be greater than zero.")
     page_roles = _outline_page_roles(Path(outline_path).expanduser().resolve(), slide_count)
+    page_titles = _outline_page_titles(Path(outline_path).expanduser().resolve(), slide_count)
 
     protected_hashes = _snapshot(_protected_files(adaptation))
 
@@ -295,8 +386,8 @@ async def generate_financial_deck(
     from memslides.session import MemSlidesSession
 
     design_instruction = instruction.strip() or (
-        "Create a professional Chinese financial research presentation from the supplied "
-        "read-only manuscript. Preserve its exact page order, titles, claims, and values. "
+        "Create a professional Chinese financial research presentation from the runtime-provided "
+        "page source packets. Preserve their exact page order, titles, claims, and values. "
         "Use every verified chart/table on its bound slide. Change presentation design only; "
         "Verified tables must occupy at least 70% of the slide width and should normally use a full-width layout. "
         "Never place a table with more than four columns or six rows in a half-width side column; put the takeaway above or below it. "
@@ -320,6 +411,7 @@ async def generate_financial_deck(
             "financial_evidence_manifest": str(adaptation.evidence_manifest),
             "financial_artifacts_read_only": True,
             "financial_page_roles": page_roles,
+            "financial_page_titles": page_titles,
             "deck_designer_max_iterations": slide_count * 10,
             "sjtu_html_branding": sjtu_branding,
         },

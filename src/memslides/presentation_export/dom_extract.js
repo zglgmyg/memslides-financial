@@ -809,9 +809,19 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
           };
         }
 
-        function zIndexFor(style) {
-          const parsed = Number.parseInt(style.zIndex, 10);
-          return Number.isFinite(parsed) ? parsed : 0;
+        function zIndexFor(element, style) {
+          let node = element;
+          let nodeStyle = style;
+          let zIndex = 0;
+          while (node && node !== document.documentElement) {
+            const parsed = Number.parseInt(nodeStyle?.zIndex, 10);
+            if (Number.isFinite(parsed)) {
+              zIndex = Math.max(zIndex, parsed);
+            }
+            node = node.parentElement;
+            nodeStyle = node ? window.getComputedStyle(node) : null;
+          }
+          return zIndex;
         }
 
         function imageSource(element) {
@@ -907,7 +917,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
             kind: "table",
             tag: "table",
             domIndex,
-            zIndex: zIndexFor(style),
+            zIndex: zIndexFor(table, style),
             box: tableBox,
             style,
             rows,
@@ -1006,7 +1016,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
           if (!visible(style, box)) {
             continue;
           }
-          const zIndex = zIndexFor(style);
+          const zIndex = zIndexFor(element, style);
           domIndex += 1;
           const mode = effectiveVisualMode(element);
 
@@ -1114,7 +1124,10 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
           if (tag === "IMG") {
             const src = imageSource(element);
             const loaded = Boolean(element.complete && element.naturalWidth > 0 && element.naturalHeight > 0);
-            const visualKind = shouldRasterizeImage(element, src, style);
+            const slideBackground = String(element.getAttribute("data-memslides-pptx-background") || "")
+              .trim()
+              .toLowerCase() === "true";
+            const visualKind = slideBackground ? "" : shouldRasterizeImage(element, src, style);
             const snapshotId = visualKind ? registerRasterTarget(element, domIndex, visualKind, tag) : "";
             if (!src || !loaded) {
               warn("image_unavailable", `Image could not be loaded and will be replaced by a placeholder: ${src || "(missing src)"}`, {
@@ -1137,6 +1150,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
               visualMode,
               visualKind,
               snapshotId,
+              slideBackground,
             });
             continue;
           }
@@ -1226,7 +1240,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
               kind: "image",
               tag: tag.toLowerCase(),
               domIndex: domIndex - 0.35,
-              zIndex,
+              zIndex: zIndex - 0.5,
               box,
               style,
               src: "",
@@ -1247,7 +1261,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
               kind: "shape",
               tag: tag.toLowerCase(),
               domIndex: domIndex - 0.25,
-              zIndex,
+              zIndex: zIndex - 0.5,
               box,
               style,
               shape: numeric(style.borderRadius) > Math.min(box.width, box.height) / 3 ? "roundRect" : "rect",

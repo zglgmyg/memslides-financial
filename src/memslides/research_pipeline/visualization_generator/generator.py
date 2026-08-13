@@ -342,7 +342,24 @@ def generate_from_plans(
                         verification_failure = str(exc)
                     break
         elif plan.visual_type == "chart":
-            if plan.evidence_refs:
+            for kind, identity in plan.evidence_refs:
+                if kind != "block":
+                    continue
+                for figure_id in snapshot.block_figure_ids.get(identity, ()):
+                    figure = snapshot.figures_by_id.get(figure_id)
+                    if figure and figure.get("source") == "paired_pdf":
+                        data = _image(
+                            plan,
+                            snapshot,
+                            "figure",
+                            figure_id,
+                            figure.get("asset_path"),
+                        )
+                        if data is not None:
+                            break
+                if data is not None:
+                    break
+            if data is None and plan.evidence_refs:
                 proposal = map_extraction_proposal(
                     plan,
                     snapshot,

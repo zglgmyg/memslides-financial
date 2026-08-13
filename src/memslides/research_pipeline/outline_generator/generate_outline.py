@@ -203,6 +203,7 @@ def build_messages(
     schema: Mapping[str, Any],
     few_shot: Mapping[str, Any],
     system_prompt: str,
+    narrative_plan: Mapping[str, Any],
 ) -> List[Dict[str, str]]:
     selected_few_shot: Mapping[str, Any]
     if "cases" in few_shot and "selection_policy" not in few_shot:
@@ -217,6 +218,7 @@ def build_messages(
         schema,
         selected_few_shot,
         system_prompt,
+        narrative_plan,
     )
 
 
@@ -591,6 +593,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=PROJECT_ROOT / "prompts" / "outline_system_prompt.md",
     )
     parser.add_argument(
+        "--narrative-plan",
+        type=Path,
+        required=True,
+        help="Verified advisory narrative_plan.json for slide planning",
+    )
+    parser.add_argument(
         "--few-shot",
         type=Path,
         default=PROJECT_ROOT / "prompts" / "outline_cases",
@@ -671,6 +679,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         context_mode = "direct" if use_direct_context else "compressed"
         schema = load_json(args.schema, "Outline schema")
+        narrative_schema = load_json(
+            PROJECT_ROOT / "schemas" / "narrative_plan.schema.json",
+            "Narrative plan schema",
+        )
+        narrative_plan = load_json(args.narrative_plan, "Narrative plan")
+        validate_json_instance(
+            narrative_plan,
+            narrative_schema,
+            label="Narrative plan",
+        )
         case_library = load_case_library(args.few_shot)
         case_selection = select_cases(snapshot, case_library)
         few_shot = case_selection.prompt_payload
@@ -703,7 +721,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else preview_context_memory(chunk)
                 for chunk in chunks
             ]
-            messages = build_messages(snapshot, preview_memories, schema, few_shot, system_prompt)
+            messages = build_messages(
+                snapshot,
+                preview_memories,
+                schema,
+                few_shot,
+                system_prompt,
+                narrative_plan,
+            )
             preview = {
                 "pipeline": (
                     "direct_slide_planning"
@@ -777,7 +802,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for ref in memory.get("evidence_refs", [])
             if isinstance(ref, Mapping)
         }
-        messages = build_messages(snapshot, runtime_memories, schema, few_shot, system_prompt)
+        messages = build_messages(
+            snapshot,
+            runtime_memories,
+            schema,
+            few_shot,
+            system_prompt,
+            narrative_plan,
+        )
 
         def postprocess_generated_outline(value: Dict[str, Any]) -> None:
             compact_front_matter_summary_slides(value, snapshot)

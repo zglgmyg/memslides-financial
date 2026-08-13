@@ -17,10 +17,22 @@ class DeckDesigner(Agent):
             int(req.extra_info.get("deck_designer_max_iterations", 0) or 0),
         )
         outcome = None
-        initial_progress_prompt = render_deck_progress_prompt(self.workspace)
-        if initial_progress_prompt:
+        financial_design = (
+            (req.extra_info or {}).get("financial_artifacts_read_only") is True
+        )
+        self._ensure_initial_user_turn(
+            markdown_file=(
+                "由运行时通过 <financial_deck_source_index> 和 "
+                "<current_page_source> 逐页提供"
+                if financial_design
+                else markdown_file
+            ),
+            prompt=req.designagent_prompt,
+        )
+        last_progress_prompt = render_deck_progress_prompt(self.workspace)
+        if last_progress_prompt:
             self.chat_history.append(
-                ChatMessage(role=Role.USER, content=initial_progress_prompt)
+                ChatMessage(role=Role.USER, content=last_progress_prompt)
             )
         while True:
             _iter += 1
@@ -31,17 +43,13 @@ class DeckDesigner(Agent):
                 self.chat_history.append(
                     ChatMessage(role=Role.USER, content=FORCE_FINALIZE_MSG["text"])
                 )
-                agent_message = await self.action(
-                    markdown_file=markdown_file, prompt=req.designagent_prompt
-                )
+                agent_message = await self.action()
                 yield agent_message
                 if agent_message.tool_calls:
                     outcome = await self.execute(agent_message.tool_calls)
                 break
 
-            agent_message = await self.action(
-                markdown_file=markdown_file, prompt=req.designagent_prompt
-            )
+            agent_message = await self.action()
             yield agent_message
             if not agent_message.tool_calls:
                 break
@@ -52,10 +60,11 @@ class DeckDesigner(Agent):
                 for item in outcome:
                     yield item
                 progress_prompt = render_deck_progress_prompt(self.workspace)
-                if progress_prompt:
+                if progress_prompt and progress_prompt != last_progress_prompt:
                     self.chat_history.append(
                         ChatMessage(role=Role.USER, content=progress_prompt)
                     )
+                    last_progress_prompt = progress_prompt
             else:
                 break
 

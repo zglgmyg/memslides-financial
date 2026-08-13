@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -15,10 +16,15 @@ from memslides.research_pipeline.document_bundle.config import MinerUConfig
 from memslides.research_pipeline.document_bundle.markdown import build_from_markdown
 from memslides.research_pipeline.document_bundle.parser.mineru_client import MinerUClient
 from memslides.research_pipeline.document_intelligence import load_document_intelligence
+from memslides.research_pipeline.narrative_plan import generate_narrative_plan
 from memslides.research_pipeline.outline_generator.generate_outline import main as generate_outline_main
 from memslides.research_pipeline.visualization_generator.audit import audit_visualization_artifacts
 from memslides.research_pipeline.visualization_generator.generate_visualizations import generate_visualizations
 from memslides.research_pipeline.visualization_generator.numeric_facts import build_numeric_fact_ledger
+from memslides.research_pipeline.speaker_manuscript import (
+    generate_speaker_manuscript,
+    render_speaker_manuscript_markdown,
+)
 
 from .exporter import PROJECT_ROOT, export_research_run
 
@@ -63,6 +69,29 @@ def _materialize_bundle(input_path: Path, working_directory: Path) -> Path:
                 input_path.stem,
                 client,
             )
+    elif input_path.suffix.casefold() in {".md", ".markdown"}:
+        paired_pdf = input_path.with_suffix(".pdf")
+        if not paired_pdf.is_file():
+            raise ResearchRunPipelineError(f"paired PDF does not exist: {paired_pdf}")
+        parse_root = working_directory / "paired_pdf_parse"
+        with MinerUClient(MinerUConfig()) as client:
+            pdf_bundle_directory, pdf_document, pdf_validation = parse_pdf(
+                paired_pdf.resolve(),
+                parse_root,
+                input_path.stem,
+                client,
+            )
+        if pdf_validation.get("status") == "failed":
+            raise ResearchRunPipelineError("Paired PDF DocumentBundle validation failed")
+        bundle_directory = working_directory / "document_bundle"
+        _, validation = build_from_markdown(
+            input_path.resolve(),
+            bundle_directory,
+            input_path.stem,
+            source_format="auto",
+            pdf_bundle_directory=pdf_bundle_directory,
+            pdf_document=pdf_document,
+        )
     else:
         bundle_directory = working_directory / "document_bundle"
         _, validation = build_from_markdown(
@@ -80,21 +109,17 @@ def _materialize_outline(
     *,
     bundle_directory: Path,
     working_directory: Path,
-    outline_input: Path | None,
     model: str | None,
     base_url: str | None,
     api_provider: str | None,
     max_tokens: int | None,
     max_attempts: int | None,
     timeout: int | None,
+    narrative_plan_path: Path,
 ) -> dict[str, Any]:
     outline_path = working_directory / "slide_outline.json"
-    if outline_input is not None:
-        outline = _load_json(outline_input.resolve(), "Slide Outline")
-        _validate_schema(outline, "slide_outline.schema.json", "Slide Outline")
-        return outline
-
     forwarded = [str(bundle_directory), "-o", str(outline_path)]
+    forwarded.extend(["--narrative-plan", str(narrative_plan_path)])
     for option, value in (
         ("--model", model),
         ("--base-url", base_url),
@@ -111,6 +136,85 @@ def _materialize_outline(
             f"Outline generation exited with status {exit_code}"
         )
     return _load_json(outline_path, "Slide Outline")
+
+
+def _materialize_narrative_plan(
+    *,
+    snapshot: Any,
+    working_directory: Path,
+    model: str | None,
+    base_url: str | None,
+    api_provider: str | None,
+    max_tokens: int | None,
+    max_attempts: int | None,
+    timeout: int | None,
+) -> tuple[dict[str, Any], Path]:
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ResearchRunPipelineError("DEEPSEEK_API_KEY is not set")
+    plan = generate_narrative_plan(
+        snapshot,
+        api_key=api_key,
+        model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+        base_url=base_url or os.getenv(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ),
+        api_provider=api_provider or "auto",
+        max_tokens=max_tokens or 8000,
+        max_attempts=max_attempts or 2,
+        timeout=timeout or 300,
+    )
+    plan_path = working_directory / "narrative_plan.json"
+    plan_path.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return plan, plan_path
+
+
+def _materialize_speaker_manuscript(
+    *,
+    snapshot: Any,
+    outline: Mapping[str, Any],
+    narrative_plan: Mapping[str, Any],
+    artifacts: Sequence[Any],
+    working_directory: Path,
+    model: str | None,
+    base_url: str | None,
+    api_provider: str | None,
+    max_tokens: int | None,
+    max_attempts: int | None,
+    timeout: int | None,
+) -> tuple[dict[str, Any], Path, str]:
+    manuscript_path = working_directory / "speaker_manuscript.json"
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ResearchRunPipelineError("DEEPSEEK_API_KEY is not set")
+    manuscript = generate_speaker_manuscript(
+        snapshot,
+        outline,
+        narrative_plan,
+        artifacts,
+        api_key=api_key,
+        model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+        base_url=base_url or os.getenv(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ),
+        api_provider=api_provider or "auto",
+        max_tokens=max_tokens or 24000,
+        max_attempts=max_attempts or 2,
+        timeout=timeout or 300,
+    )
+    manuscript_path.write_text(
+        json.dumps(manuscript, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    markdown = render_speaker_manuscript_markdown(manuscript)
+    (working_directory / "speaker_manuscript.md").write_text(
+        markdown,
+        encoding="utf-8",
+    )
+    return manuscript, manuscript_path, markdown
 
 
 def _blocking_generation_issues(
@@ -151,7 +255,6 @@ def run_research_pipeline(
     input_path: Path,
     output_directory: Path,
     *,
-    outline_input: Path | None = None,
     candidate_mode: str = "active",
     overwrite: bool = False,
     model: str | None = None,
@@ -160,11 +263,17 @@ def run_research_pipeline(
     max_tokens: int | None = None,
     max_attempts: int | None = None,
     timeout: int | None = None,
+    speaker_max_tokens: int | None = None,
+    speaker_max_attempts: int | None = None,
 ) -> tuple[Path, tuple[str, ...]]:
     """Generate a portable research-run directory without rendering a PPT."""
 
     if candidate_mode not in {"active", "shadow", "disabled"}:
         raise ResearchRunPipelineError(f"invalid candidate_mode: {candidate_mode}")
+    if speaker_max_tokens is not None and speaker_max_tokens < 1:
+        raise ResearchRunPipelineError("speaker_max_tokens must be positive")
+    if speaker_max_attempts is not None and speaker_max_attempts < 1:
+        raise ResearchRunPipelineError("speaker_max_attempts must be positive")
     temporary_root = Path(tempfile.mkdtemp(prefix="research-run-work-"))
     try:
         bundle_directory = _materialize_bundle(input_path, temporary_root)
@@ -172,16 +281,26 @@ def run_research_pipeline(
             bundle_directory,
             PROJECT_ROOT / "schemas" / "document_bundle.schema.json",
         )
-        outline = _materialize_outline(
-            bundle_directory=bundle_directory,
+        narrative_plan, narrative_plan_path = _materialize_narrative_plan(
+            snapshot=snapshot,
             working_directory=temporary_root,
-            outline_input=outline_input,
             model=model,
             base_url=base_url,
             api_provider=api_provider,
             max_tokens=max_tokens,
             max_attempts=max_attempts,
             timeout=timeout,
+        )
+        outline = _materialize_outline(
+            bundle_directory=bundle_directory,
+            working_directory=temporary_root,
+            model=model,
+            base_url=base_url,
+            api_provider=api_provider,
+            max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            timeout=timeout,
+            narrative_plan_path=narrative_plan_path,
         )
         artifacts, issues = generate_visualizations(
             outline,
@@ -193,6 +312,23 @@ def run_research_pipeline(
             raise ResearchRunPipelineError(blocking[0].format())
         ledger = build_numeric_fact_ledger(snapshot)
         numeric_audit = audit_visualization_artifacts(artifacts, ledger)
+        (
+            speaker_manuscript,
+            _,
+            speaker_manuscript_markdown,
+        ) = _materialize_speaker_manuscript(
+            snapshot=snapshot,
+            outline=outline,
+            narrative_plan=narrative_plan,
+            artifacts=artifacts,
+            working_directory=temporary_root,
+            model=model,
+            base_url=base_url,
+            api_provider=api_provider,
+            max_tokens=speaker_max_tokens,
+            max_attempts=speaker_max_attempts,
+            timeout=timeout,
+        )
         source_sha256 = str(snapshot.metadata.get("source_sha256") or "0" * 64)
         result = export_research_run(
             output_directory=output_directory,
@@ -202,6 +338,9 @@ def run_research_pipeline(
             document_bundle_directory=bundle_directory,
             document_source_sha256=source_sha256,
             overwrite=overwrite,
+            narrative_plan=narrative_plan,
+            speaker_manuscript=speaker_manuscript,
+            speaker_manuscript_markdown=speaker_manuscript_markdown,
         )
         return result, tuple(issue.format() for issue in warnings)
     except ResearchRunPipelineError:

@@ -15,7 +15,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input", type=Path, help="Report file or existing DocumentBundle")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--outline-input", type=Path)
     parser.add_argument(
         "--candidate-mode",
         choices=["active", "shadow", "disabled"],
@@ -27,6 +26,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-provider", choices=["auto", "deepseek", "siliconflow"])
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--max-attempts", type=int)
+    parser.add_argument(
+        "--speaker-max-tokens",
+        type=int,
+        help="Output budget for the speaker-manuscript stage (default: 24000)",
+    )
+    parser.add_argument(
+        "--speaker-max-attempts",
+        type=int,
+        help="Validation/retry attempts for the speaker-manuscript stage (default: 2)",
+    )
     parser.add_argument("--timeout", type=int)
     return parser
 
@@ -37,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
         output, warnings = run_research_pipeline(
             args.input,
             args.output_dir,
-            outline_input=args.outline_input,
             candidate_mode=args.candidate_mode,
             overwrite=args.overwrite,
             model=args.model,
@@ -46,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
             max_tokens=args.max_tokens,
             max_attempts=args.max_attempts,
             timeout=args.timeout,
+            speaker_max_tokens=args.speaker_max_tokens,
+            speaker_max_attempts=args.speaker_max_attempts,
         )
     except ResearchRunPipelineError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

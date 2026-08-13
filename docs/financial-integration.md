@@ -28,18 +28,26 @@ python -m memslides.research_pipeline.research_run \
   --output-dir .memslides/research-run
 ```
 
-PDF parsing reads `MINERU_API_TOKEN`; automatic outline generation reads
-`DEEPSEEK_API_KEY`. Do not store either value in the repository or generated
-JSON. Use `--outline-input` to reuse a previously reviewed outline without an
-outline-generation request. Existing output directories are protected unless
-`--overwrite` is explicitly supplied.
+PDF parsing reads `MINERU_API_TOKEN`; automatic generation reads
+`DEEPSEEK_API_KEY`. The default narrative path is report evidence -> narrative
+plan -> structured slide outline -> audited visualizations -> slide-aligned
+speaker manuscript. The narrative plan supplies thesis and transition intent,
+while the outline remains responsible for source-preserving page planning.
+Existing output directories are protected unless `--overwrite` is explicitly
+supplied.
 
 ## Boundary
 
-The upstream research pipeline is responsible for document parsing,
-evidence selection, outline generation, numeric fact normalization, chart/table
-data construction, and numeric audit. The adapter accepts exactly these three
-artifacts:
+The upstream research pipeline is responsible for document parsing, evidence
+selection, narrative planning, outline compilation, numeric fact normalization,
+chart/table data construction, numeric audit, and speaker-manuscript generation. The research
+run includes these narrative artifacts in addition to the audited deck inputs:
+
+- `narrative_plan.json`: evidence-grounded advisory narrative plan
+- `speaker_manuscript.json`: verified slide-aligned manuscript after pagination
+- `speaker_manuscript.md`: presenter-readable per-slide manuscript
+
+The adapter consumes the following audited deck artifacts:
 
 - `slide_outline.json`
 - `visualizations/visualization_manifest.json` and the visualization JSON files
@@ -89,6 +97,10 @@ The output directory becomes an ordinary MemSlides workspace fragment:
 
 - `manuscript.md` preserves slide order, titles, key messages, bullet points,
   evidence identifiers, and explicit visual references.
+- `speaker_manuscript.json` and `speaker_manuscript.md` preserve the verified,
+  slide-aligned presenter script generated after pagination.
+- `speaker_script_by_slide.md` presents each verified page script and transition
+  in the final slide order.
 - `asset_manifest.json` follows the asset shape already consumed by
   `PageAssetPlanner`. Its extra `verification` object records the slide,
   visualization, source evidence, and audit status.

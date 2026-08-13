@@ -180,7 +180,8 @@ def test_financial_design_guidance_preserves_roles_without_fixing_layout() -> No
     assert "Use only this exact source palette" in guidance
     assert "span the full page width" in guidance
     assert "no outer whitespace" in guidance
-    assert "data-page-role" not in guidance
+    assert 'data-page-role="title|content|closing"' in guidance
+    assert 'data-slide-id="slide_XX"' in guidance
     assert "top:0" not in guidance
 
 
@@ -204,18 +205,18 @@ def test_outline_page_roles_rejects_section(tmp_path: Path) -> None:
 
 def test_financial_html_contract_accepts_marked_content_title_bar(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        '<html><body data-page-role="title" style="background:#F8FAFC">Cover</body></html>',
+        '<html><body data-page-role="title" data-slide-id="slide_01" style="background:#F8FAFC">Cover</body></html>',
         encoding="utf-8",
     )
     (tmp_path / "slide_02.html").write_text(
-        """<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">
+        """<html><body data-page-role="content" data-slide-id="slide_02" style="background:#1E3A5F;color:#FFFFFF">
         <section data-financial-role="content-title-bar" style="position:absolute;left:8%;top:12%;background:#FFFFFF;color:#0F172A">
           Freely composed content
         </section><p style="color:#475569">Body</p></body></html>""",
         encoding="utf-8",
     )
     (tmp_path / "slide_03.html").write_text(
-        '<html><body data-page-role="closing" style="background:#1E3A5F;color:#FFFFFF">End</body></html>',
+        '<html><body data-page-role="closing" data-slide-id="slide_03" style="background:#1E3A5F;color:#FFFFFF">End</body></html>',
         encoding="utf-8",
     )
 
@@ -228,7 +229,7 @@ def test_financial_html_contract_accepts_marked_content_title_bar(tmp_path: Path
 
 def test_financial_html_contract_rejects_missing_content_title_bar(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        '<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">Body</body></html>',
+        '<html><body data-page-role="content" data-slide-id="slide_01" style="background:#1E3A5F;color:#FFFFFF">Body</body></html>',
         encoding="utf-8",
     )
 
@@ -242,9 +243,43 @@ def test_financial_html_contract_rejects_missing_content_title_bar(tmp_path: Pat
 
 def test_financial_html_contract_rejects_wrong_role(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
-        '<html><body data-page-role="content" style="background:#0EA5E9">Wrong</body></html>',
+        '<html><body data-page-role="content" data-slide-id="slide_01" style="background:#0EA5E9">Wrong</body></html>',
         encoding="utf-8",
     )
 
     with pytest.raises(FinancialGenerationError, match="financial HTML contract"):
+        _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
+
+
+def test_financial_html_contract_rejects_content_title_bar_on_cover(tmp_path: Path) -> None:
+    (tmp_path / "slide_01.html").write_text(
+        """<html><body data-page-role="title" data-slide-id="slide_01" style="background:#1E3A5F;color:#FFFFFF">
+        <div data-financial-role="content-title-bar" style="background:#1E3A5F">Wrong</div>
+        </body></html>""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinancialGenerationError, match="title page must not use"):
+        _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
+
+
+def test_financial_html_validation_rejects_duplicate_substantial_text(tmp_path: Path) -> None:
+    repeated = "煤制烯烃成本优势显著，盈利能力具备韧性"
+    (tmp_path / "slide_01.html").write_text(
+        f'''<html><body data-page-role="title" data-slide-id="slide_01">
+        <h1>{repeated}</h1><div>{repeated}</div></body></html>''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinancialGenerationError, match="duplicate visible text"):
+        _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
+
+
+def test_financial_html_contract_rejects_slide_identity_mismatch(tmp_path: Path) -> None:
+    (tmp_path / "slide_01.html").write_text(
+        '<html><body data-page-role="title" data-slide-id="slide_02">Cover</body></html>',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinancialGenerationError, match="data-slide-id=slide_02"):
         _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])

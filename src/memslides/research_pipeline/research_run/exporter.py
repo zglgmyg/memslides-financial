@@ -173,6 +173,9 @@ def export_research_run(
     artifacts: Sequence[Any],
     document_bundle_directory: Path,
     document_source_sha256: str,
+    narrative_plan: Mapping[str, Any],
+    speaker_manuscript: Mapping[str, Any],
+    speaker_manuscript_markdown: str,
     overwrite: bool = False,
 ) -> Path:
     """Atomically publish only the files required by the financial adapter."""
@@ -261,6 +264,22 @@ def export_research_run(
         )
         _write_json(staging / "slide_outline.json", outline)
         _write_json(staging / "numeric_audit.json", numeric_audit)
+        _validate_schema(
+            narrative_plan,
+            "narrative_plan.schema.json",
+            "Narrative Plan",
+        )
+        _write_json(staging / "narrative_plan.json", narrative_plan)
+        _validate_schema(
+            speaker_manuscript,
+            "speaker_manuscript.schema.json",
+            "Speaker Manuscript",
+        )
+        _write_json(staging / "speaker_manuscript.json", speaker_manuscript)
+        (staging / "speaker_manuscript.md").write_text(
+            speaker_manuscript_markdown,
+            encoding="utf-8",
+        )
         _write_json(visualizations_directory / "visualization_manifest.json", manifest)
 
         if output_directory.exists():

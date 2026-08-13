@@ -46,6 +46,39 @@ def _outline(tmp_path: Path, *, slides: list[dict] | None = None) -> Path:
     for page_number, slide in enumerate(payload["slides"], start=1):
         slide.setdefault("page_role", "title" if page_number == 1 else "content")
     _dump(path, payload)
+    speaker_slides = []
+    for page_number, slide in enumerate(payload["slides"], start=1):
+        speaker_slides.append(
+            {
+                "slide_id": slide["slide_id"],
+                "slide_title": slide["title"],
+                "narrative_role": "opening" if page_number == 1 else "fact",
+                "script": f"讲解{slide['title']}。",
+                "transition_to_next": (
+                    "进入下一页。" if page_number < len(payload["slides"]) else ""
+                ),
+                "evidence_refs": slide.get("evidence_refs", []),
+                "estimated_seconds": 30,
+            }
+        )
+    _dump(
+        tmp_path / "speaker_manuscript.json",
+        {
+            "schema_version": "2.0.0",
+            "metadata": {
+                "title": "测试讲稿",
+                "audience": "测试听众",
+                "presentation_purpose": "测试适配",
+                "estimated_total_minutes": 5,
+            },
+            "opening": "开始汇报。",
+            "slides": speaker_slides,
+            "closing": "汇报结束。",
+        },
+    )
+    (tmp_path / "speaker_manuscript.md").write_text(
+        "# 测试讲稿\n", encoding="utf-8"
+    )
     return path
 
 

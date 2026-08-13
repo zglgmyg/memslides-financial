@@ -15,25 +15,26 @@ def test_optional_html_branding_runs_before_export_and_is_idempotent(tmp_path: P
     slides = tmp_path / "outputs"
     slides.mkdir()
     (slides / "slide_01.html").write_text(
-        '<html><body data-page-role="title" style="background:#1E3A5F;color:#FFFFFF">Cover</body></html>',
+        '<html><body data-page-role="title" data-slide-id="slide_01" style="background:#1E3A5F;color:#FFFFFF">Cover</body></html>',
         encoding="utf-8",
     )
     (slides / "slide_02.html").write_text(
-        """<html><body data-page-role="content" style="background:#1E3A5F;color:#FFFFFF">
-        <div data-financial-role="content-title-bar" style="position:absolute;left:8%;top:12%">
+        """<html><body data-page-role="content" data-slide-id="slide_02" style="background:#1E3A5F;color:#FFFFFF">
+        <div data-financial-role="content-title-bar" style="position:absolute;left:8%;top:12%;background:#1E3A5F;color:#FFFFFF">
           Freely placed title
         </div><div style="background:#DBEAFE;border:1px solid #CBD5E1;color:#475569">Body</div>
         </body></html>""",
         encoding="utf-8",
     )
     (slides / "slide_03.html").write_text(
-        '<html><body data-page-role="closing" style="background:rgb(30,58,95);color:#FFFFFF">End</body></html>',
+        '<html><body data-page-role="closing" data-slide-id="slide_03" style="background:rgb(30,58,95);color:#FFFFFF">End</body></html>',
         encoding="utf-8",
     )
     roles = ["title", "content", "closing"]
+    titles = ["Cover", "Freely placed title", "End"]
 
-    first = apply_sjtu_brand_to_html(slides, roles)
-    second = apply_sjtu_brand_to_html(slides, roles)
+    first = apply_sjtu_brand_to_html(slides, roles, titles)
+    second = apply_sjtu_brand_to_html(slides, roles, titles)
 
     cover = (slides / "slide_01.html").read_text(encoding="utf-8")
     content = (slides / "slide_02.html").read_text(encoding="utf-8")
@@ -91,7 +92,11 @@ def test_background_art_applies_to_title_and_closing_only(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    report = apply_sjtu_brand_to_html(slides, ["title", "content", "closing"])
+    report = apply_sjtu_brand_to_html(
+        slides,
+        ["title", "content", "closing"],
+        ["Gradient cover", "Title", "End"],
+    )
 
     assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' in (
         slides / "slide_01.html"
@@ -119,7 +124,7 @@ def test_financial_postprocessing_sets_page_roles_when_designer_omits_them(
         encoding="utf-8",
     )
 
-    apply_page_roles_to_html(slides, ["title", "content"])
+    apply_page_roles_to_html(slides, ["title", "content"], ["Cover", "Title"])
 
     html = (slides / "slide_01.html").read_text(encoding="utf-8")
     content = (slides / "slide_02.html").read_text(encoding="utf-8")

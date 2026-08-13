@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -32,6 +33,7 @@ from memslides.pipelines.generation_support import (
     render_design_plan_execution_plan as _render_design_plan_execution_plan,
 )
 from memslides.tools.deck_runtime import (
+    compact_verified_asset_index,
     initialize_control_document_tracking,
     initialize_design_plan_tracking,
     set_current_agent,
@@ -54,6 +56,217 @@ _STRUCTURAL_TEMPLATE_MODES = {
 
 def _is_structural_template_mode(mode: str | None) -> bool:
     return str(mode or "") in _STRUCTURAL_TEMPLATE_MODES
+
+
+def _financial_design_system_prompt(system_prompt: str) -> str:
+    """Build the financial non-template prompt from unambiguous source sections."""
+
+    prompt = str(system_prompt or "").strip()
+    is_zh = "<可用资源>" in prompt
+    resource_tag = "可用资源" if is_zh else "available_resources"
+    style_tag = "风格说明" if is_zh else "style_guidelines"
+    intro = prompt.split(f"<{resource_tag}>", 1)[0].strip()
+    style_match = re.search(
+        rf"<{style_tag}>.*?</{style_tag}>",
+        prompt,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if not intro or style_match is None:
+        raise ValueError("DeckDesigner role prompt is missing required base/style sections")
+
+    if is_zh:
+        workflow = """<金融研报工作流>
+1. 先读取并完善 `design_plan.md`，写入后必须重新读取确认。
+2. 运行时通过 `<financial_deck_source_index>` 提供全局页序，通过 `<current_page_source>` 只提供当前页的原文、演讲稿提示、证据引用和已验证资产。
+3. 按页执行 `write_html_file` → `inspect_slide`；检查通过后继续下一页。
+4. 所有页面完成后调用 `finalize`。
+</金融研报工作流>"""
+    else:
+        workflow = """<financial_workflow>
+1. Read and refine `design_plan.md`, then read back the latest write.
+2. Use `<financial_deck_source_index>` for deck order and `<current_page_source>` for only the active page's source, speaker guidance, evidence references, and verified assets.
+3. For each page run `write_html_file` then `inspect_slide`; continue after it passes.
+4. Call `finalize` after all pages are complete.
+</financial_workflow>"""
+
+    contract = """<financial_page_source_contract>
+- The runtime-provided `<current_page_source>.source_text` is the authoritative content for the active page.
+- Do not read the full or segmented manuscript. Do not inspect speaker/evidence/metadata files; their page-relevant data is already in the current packet.
+- Preserve listed verified asset paths and evidence references for rendering and downstream citations; do not recalculate or redraw financial evidence.
+- `speaker_script` and `transition_to_next` guide narration and composition only. Do not copy them into visible slide text unless supported by `source_text`.
+</financial_page_source_contract>"""
+    return "\n\n".join((intro, workflow, contract, style_match.group(0).strip()))
+
+
+def _financial_design_plan_execution_plan(plan_path: str) -> str:
+    return f"""<design_plan_execution_plan>
+- Step 1: read `{plan_path}`.
+- Step 2: refine it using `<financial_deck_source_index>` and write it with `write_markdown_file`.
+- Step 3: read back the latest design plan.
+- Step 4: proceed directly to the active `<current_page_source>` and write its slide HTML.
+</design_plan_execution_plan>"""
+
+
+def _append_deck_designer_runtime_context(
+    system_prompt: str,
+    workspace_context: str,
+    asset_context: str,
+) -> str:
+    """Append final runtime context without rewriting the base system prompt."""
+
+    return "\n\n".join(
+        part.strip()
+        for part in (system_prompt, workspace_context, asset_context)
+        if str(part or "").strip()
+    )
+
+
+def _financial_page_source_bundle(
+    *,
+    workspace: Path,
+    manuscript_path: Path | str,
+    expected_slide_count: int,
+    page_roles: list[Any] | None = None,
+    page_titles: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Build immutable, page-aligned financial source packets from existing artifacts."""
+
+    path = Path(manuscript_path).resolve()
+    raw_source = path.read_bytes()
+    text = raw_source.decode("utf-8")
+    pages = [part.strip() for part in re.split(r"(?m)^\s*---\s*$", text) if part.strip()]
+    if expected_slide_count <= 0 or len(pages) != expected_slide_count:
+        raise ValueError(
+            "Financial manuscript page count does not match the requested deck: "
+            f"manuscript={len(pages)}, expected={expected_slide_count}"
+        )
+
+    roles = [str(value or "").strip() for value in (page_roles or [])]
+    titles = [str(value or "").strip() for value in (page_titles or [])]
+    verified_assets: list[dict[str, Any]] = []
+    manifest_path = workspace / "asset_manifest.json"
+    if manifest_path.is_file():
+        try:
+            verified_assets = compact_verified_asset_index(manifest_path, workspace)
+        except (OSError, ValueError, json.JSONDecodeError):
+            verified_assets = []
+    verified_assets_by_path = {
+        str(asset.get("path", "") or "").replace("\\", "/"): asset
+        for asset in verified_assets
+        if str(asset.get("path", "") or "").strip()
+    }
+    speaker_by_slide: dict[str, dict[str, Any]] = {}
+    speaker_slides: list[dict[str, Any]] = []
+    speaker_path = workspace / "speaker_manuscript.json"
+    if speaker_path.is_file():
+        try:
+            speaker_payload = json.loads(speaker_path.read_text(encoding="utf-8"))
+            speaker_slides = [
+                item for item in speaker_payload.get("slides", []) if isinstance(item, dict)
+            ] if isinstance(speaker_payload, dict) else []
+            speaker_by_slide = {
+                str(item.get("slide_id", "") or "").strip(): item
+                for item in speaker_slides
+                if str(item.get("slide_id", "") or "").strip()
+            }
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            speaker_by_slide = {}
+            speaker_slides = []
+
+    packets: dict[str, dict[str, Any]] = {}
+    source_index: list[dict[str, Any]] = []
+    for page_number, source_text in enumerate(pages, start=1):
+        slide_match = re.search(
+            r"<!--\s*research-report\s+slide_id=([^\s>]+)\s*-->", source_text
+        )
+        role_match = re.search(
+            r"<!--\s*research-report\s+page_role=([^\s>]+)\s*-->", source_text
+        )
+        title_match = re.search(r"(?m)^#\s+(.+?)\s*$", source_text)
+        evidence_match = re.search(r"(?m)^Evidence:\s*(.+?)\s*$", source_text)
+        if not slide_match:
+            raise ValueError(
+                f"Financial manuscript page {page_number} has no research-report slide_id."
+            )
+        slide_id = slide_match.group(1).strip()
+        title = (
+            titles[page_number - 1]
+            if page_number <= len(titles) and titles[page_number - 1]
+            else (title_match.group(1).strip() if title_match else "")
+        )
+        page_role = (
+            roles[page_number - 1]
+            if page_number <= len(roles) and roles[page_number - 1]
+            else (role_match.group(1).strip() if role_match else "")
+        )
+        asset_paths = [
+            match.strip()
+            for match in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", source_text)
+            if match.strip()
+        ]
+        page_assets = [
+            dict(
+                verified_assets_by_path.get(asset_path.replace("\\", "/"), {"path": asset_path})
+            )
+            for asset_path in asset_paths
+        ]
+        evidence_refs = []
+        if evidence_match:
+            evidence_refs = [
+                value.strip()
+                for value in evidence_match.group(1).split(",")
+                if value.strip()
+            ]
+        if speaker_slides and slide_id not in speaker_by_slide:
+            raise ValueError(
+                f"speaker_manuscript.json has no script for financial slide_id {slide_id}."
+            )
+        speaker = speaker_by_slide.get(slide_id, {})
+        packet = {
+            "page": page_number,
+            "slide_id": slide_id,
+            "title": title,
+            "page_role": page_role,
+            "source_text": source_text,
+            "evidence_refs": evidence_refs,
+            "assets": page_assets,
+            "speaker_script": str(speaker.get("script", "") or "").strip(),
+            "transition_to_next": str(speaker.get("transition_to_next", "") or "").strip(),
+        }
+        packets[str(page_number)] = packet
+
+        key_message = ""
+        for line in source_text.splitlines():
+            candidate = line.strip()
+            if (
+                candidate
+                and not candidate.startswith(("#", "<!--", "![", "Evidence:"))
+                and candidate != "---"
+            ):
+                key_message = candidate.removeprefix("- ").strip()
+                break
+        source_index.append(
+            {
+                "page": page_number,
+                "slide_id": slide_id,
+                "title": title,
+                "page_role": page_role,
+                "key_message": key_message,
+                "asset_count": len(page_assets),
+            }
+        )
+
+    try:
+        source_path = path.relative_to(workspace.resolve()).as_posix()
+    except ValueError:
+        source_path = str(path)
+    return {
+        "mode": "financial_page_packets",
+        "source_path": source_path,
+        "source_sha256": hashlib.sha256(raw_source).hexdigest(),
+        "source_index": source_index,
+        "pages": packets,
+    }
 
 
 def _latest_assistant_text(agent: Any) -> str:
@@ -140,11 +353,25 @@ def _ensure_generation_deck_execution_state(
         encoding="utf-8",
     )
 
+    source_bundle = None
+    if (
+        (request.extra_info or {}).get("financial_artifacts_read_only") is True
+        and md_file is not None
+    ):
+        source_bundle = _financial_page_source_bundle(
+            workspace=workspace,
+            manuscript_path=md_file,
+            expected_slide_count=expected,
+            page_roles=list((request.extra_info or {}).get("financial_page_roles") or []),
+            page_titles=list((request.extra_info or {}).get("financial_page_titles") or []),
+        )
+
     return initialize_deck_execution_state(
         workspace,
         expected_slide_count=expected,
         slide_dir=_slide_dir_rel(workspace, slide_dir),
         profile_execution_plan=profile_execution_plan,
+        source_bundle=source_bundle,
     )
 
 
@@ -543,7 +770,27 @@ def _write_content_asset_manifest(
     return manifest_path
 
 
-def _asset_manifest_prompt(manifest_path: Path, *, verified_read_only: bool = False) -> str:
+def _asset_manifest_prompt(
+    manifest_path: Path,
+    *,
+    verified_read_only: bool = False,
+    workspace: Path | None = None,
+) -> str:
+    if verified_read_only:
+        return (
+            "**Verified attachment asset contract**:\n"
+            "- The active `<current_page_source>.assets` list is the complete model-facing "
+            "view for that page; do not read asset_manifest.json or visual metadata files.\n"
+            "- Every asset listed for the active page MUST be used on that page.\n"
+            "- Do not regenerate, redraw, recalculate, replace, crop away, or edit "
+            "verified charts/tables.\n"
+            "- You may only position and scale the complete asset while preserving "
+            "legibility and aspect ratio.\n"
+            "- The manuscript, asset manifest, evidence manifest, and verified asset "
+            "files are immutable.\n"
+            "- Formulas must be rendered as visible HTML text/math, not hidden comments.\n"
+            "- Do not use asset paths outside the current workspace."
+        )
     prompt = (
         "📎 **Attachment asset contract**:\n"
         f"- Read `{manifest_path.name}` before writing slide HTML.\n"
@@ -849,7 +1096,7 @@ async def run_generation_flow(
     self._freeze_preference_writeback_current_job = (
         self._should_freeze_preference_writeback(request)
     )
-    with open(self.workspace / ".input_request.json", "w") as f:
+    with open(self.workspace / ".input_request.json", "w", encoding="utf-8") as f:
         json.dump(request.model_dump(), f, ensure_ascii=False, indent=2)
     # Keep AgentEnv alive for potential modify() calls
     await self._ensure_env()
@@ -1322,6 +1569,25 @@ async def run_generation_flow(
                 self.language,
                 config_file=str(_template_role_file) if _template_role_file else None,
             )
+            if (request.extra_info or {}).get("financial_artifacts_read_only") is True:
+                financial_system = _financial_design_system_prompt(
+                    self.designagent.chat_history[0].text
+                )
+                self.designagent.system = financial_system
+                self.designagent.chat_history[0] = ChatMessage(
+                    role=Role.SYSTEM,
+                    content=financial_system,
+                )
+                self.designagent.remove_tools_by_names(
+                    {
+                        "list_template_layouts",
+                        "recommend_template_layout",
+                        "query_slide_layout",
+                        "todo_create",
+                        "todo_update",
+                        "todo_list",
+                    }
+                )
             self.agent = self.designagent
 
             # Stage 15: Unified tool callback
@@ -1395,27 +1661,8 @@ async def run_generation_flow(
             design_slide_dir: Path | None = None
             try:
                 design_slide_dir = self._prime_design_slide_output_dir(md_file)
-                workspace_context = self._build_workspace_context_block(
-                    slide_dir=design_slide_dir,
-                    manuscript_path=md_file,
-                    include_active_slide_dir=True,
-                )
-                if workspace_context:
-                    current_system = self.designagent.chat_history[0].text
-                    self.designagent.chat_history[0] = ChatMessage(
-                        role=Role.SYSTEM,
-                        content=(
-                            current_system
-                            + f"\n\n{workspace_context}"
-                            + f"\n\n{_asset_manifest_prompt(asset_manifest_path, verified_read_only=bool(prebuilt_asset_manifest))}"
-                        ),
-                    )
-                    info(
-                        "Injected workspace context to DeckDesigner Agent with active slide dir %s",
-                        design_slide_dir,
-                    )
             except Exception as e:
-                logger.warning(f"Workspace context injection to DeckDesigner failed: {e}")
+                logger.warning(f"Failed to prepare DeckDesigner slide directory: {e}")
 
             # Stage 7: 注入模板档案到 DeckDesigner Agent（使用 TemplateGuideBuilder）
             template_runtime_mode = str(
@@ -1604,17 +1851,36 @@ async def run_generation_flow(
                             f"{reference_note}"
                         )
 
+                    financial_design = (
+                        (request.extra_info or {}).get("financial_artifacts_read_only") is True
+                    )
+                    if financial_design:
+                        design_plan_prompt = (
+                            "⚠️ **Financial non-template design plan**:\n"
+                            f"- Read and refine `{_existing_design_plan_rel or 'design_plan.md'}` "
+                            "using the runtime-provided `<financial_deck_source_index>`.\n"
+                            "- Do not inspect manuscript, speaker, evidence, or metadata files; "
+                            "page-relevant inputs arrive in `<current_page_source>`.\n"
+                            "- Read back the latest design plan, then begin the active page."
+                        )
+
                     current_system = self.designagent.chat_history[0].text
                     self.designagent.chat_history[0] = ChatMessage(
                         role=Role.SYSTEM,
                         content=(
                             current_system
                             + f"\n\n{design_plan_prompt}\n\n"
-                            + _render_design_plan_execution_plan(
-                                _existing_design_plan_rel or "design_plan.md",
-                                scaffold_created=_created_design_plan_scaffold,
-                                scaffold_requires_refinement=not _persona_ready_scaffold,
-                                profile_contract_present=_profile_contract_present,
+                            + (
+                                _financial_design_plan_execution_plan(
+                                    _existing_design_plan_rel or "design_plan.md"
+                                )
+                                if financial_design
+                                else _render_design_plan_execution_plan(
+                                    _existing_design_plan_rel or "design_plan.md",
+                                    scaffold_created=_created_design_plan_scaffold,
+                                    scaffold_requires_refinement=not _persona_ready_scaffold,
+                                    profile_contract_present=_profile_contract_present,
+                                )
                             )
                         ),
                     )
@@ -1810,10 +2076,47 @@ async def run_generation_flow(
                         deck_execution_state_path,
                     )
             except Exception as e:
+                if (request.extra_info or {}).get("financial_artifacts_read_only") is True:
+                    raise RuntimeError(
+                        "Financial DeckDesigner source packets could not be initialized; "
+                        "generation cannot fall back to raw manuscript reads."
+                    ) from e
                 logger.warning(
                     "Failed to initialize DeckDesigner execution state (non-fatal): %s",
                     e,
                 )
+
+            try:
+                workspace_context = self._build_workspace_context_block(
+                    slide_dir=design_slide_dir,
+                    manuscript_path=(
+                        None
+                        if (request.extra_info or {}).get("financial_artifacts_read_only") is True
+                        else md_file
+                    ),
+                    include_active_slide_dir=True,
+                )
+                asset_context = _asset_manifest_prompt(
+                    asset_manifest_path,
+                    verified_read_only=bool(prebuilt_asset_manifest),
+                    workspace=self.workspace,
+                )
+                current_system = self.designagent.chat_history[0].text
+                self.designagent.chat_history[0] = ChatMessage(
+                    role=Role.SYSTEM,
+                    content=_append_deck_designer_runtime_context(
+                        current_system,
+                        workspace_context,
+                        asset_context,
+                    ),
+                )
+                info(
+                    "Injected final workspace and asset context to DeckDesigner Agent "
+                    "with active slide dir %s",
+                    design_slide_dir,
+                )
+            except Exception as e:
+                logger.warning(f"Workspace context injection to DeckDesigner failed: {e}")
 
             design_tool_start = len(agent_env.tool_history)
             design_ok = True
@@ -1898,14 +2201,19 @@ async def run_generation_flow(
                 _financial_page_roles = list(
                     _extra_info.get("financial_page_roles") or []
                 )
+                _financial_page_titles = list(
+                    _extra_info["financial_page_titles"]
+                )
                 apply_page_roles_to_html(
                     slide_html_dir,
                     _financial_page_roles,
+                    _financial_page_titles,
                 )
                 if _extra_info.get("sjtu_html_branding") is True:
                     _brand_report = apply_sjtu_brand_to_html(
                         slide_html_dir,
                         _financial_page_roles,
+                        _financial_page_titles,
                     )
                     _brand_report_path = self.workspace / "sjtu_html_brand_report.json"
                     _brand_report_path.write_text(

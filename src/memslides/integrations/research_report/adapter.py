@@ -13,7 +13,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 
 JsonObject = dict[str, Any]
@@ -343,8 +343,8 @@ def _manuscript(
             )
         lines = [
             f"<!-- research-report page_role={page_role} -->",
-            f"# {slide['title']}",
         ]
+        lines.append(f"# {slide['title']}")
         key_message = str(slide.get("key_message", "") or "").strip()
         if key_message:
             lines.extend(["", key_message])
@@ -362,6 +362,22 @@ def _manuscript(
         lines.extend(["", f"<!-- research-report slide_id={slide_id} -->"])
         pages.append("\n".join(lines).rstrip())
     return "\n\n---\n\n".join(pages) + "\n"
+
+
+def _speaker_script_by_slide(speaker_manuscript: Mapping[str, Any]) -> str:
+    lines = [
+        f"# {speaker_manuscript['metadata']['title']}｜配套发言稿",
+        "",
+        str(speaker_manuscript["opening"]),
+    ]
+    for page_number, slide in enumerate(speaker_manuscript.get("slides", []), start=1):
+        lines.extend(["", f"## 第{page_number}页｜{slide['slide_title']}", ""])
+        lines.append(str(slide["script"]))
+        transition = str(slide.get("transition_to_next") or "").strip()
+        if transition:
+            lines.extend(["", f"转场：{transition}"])
+    lines.extend(["", "## 结束语", "", str(speaker_manuscript["closing"])])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def adapt_research_report(
@@ -384,6 +400,13 @@ def adapt_research_report(
     outline = _read_json(outline_file, "slide_outline.json")
     manifest = _read_json(manifest_file, "visualization_manifest.json")
     audit = _read_json(audit_file, "numeric_audit.json")
+    speaker_file = outline_file.with_name("speaker_manuscript.json")
+    speaker_manuscript = _read_json(speaker_file, "speaker_manuscript.json")
+    speaker_markdown = speaker_file.with_suffix(".md")
+    if not speaker_markdown.is_file():
+        raise ResearchReportAdapterError(
+            f"speaker_manuscript.md not found: {speaker_markdown}"
+        )
 
     expected_outline_hash = str(manifest.get("outline_sha256", "") or "").strip().lower()
     actual_outline_hash = _canonical_sha256(outline)
@@ -506,6 +529,12 @@ def adapt_research_report(
     manuscript_path = workspace / "manuscript.md"
     manuscript_path.write_text(
         _manuscript(slides, assets_by_slide, bindings_by_slide, workspace), encoding="utf-8"
+    )
+    shutil.copy2(speaker_file, workspace / "speaker_manuscript.json")
+    shutil.copy2(speaker_markdown, workspace / "speaker_manuscript.md")
+    (workspace / "speaker_script_by_slide.md").write_text(
+        _speaker_script_by_slide(speaker_manuscript),
+        encoding="utf-8",
     )
     asset_manifest_path = workspace / "asset_manifest.json"
     _write_json(

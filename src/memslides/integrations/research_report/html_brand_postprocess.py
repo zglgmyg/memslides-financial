@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from bs4 import BeautifulSoup, Tag
+
 
 SJTU_LOGO_MARKER = "sjtu-financial-brand-mark"
 SJTU_BACKGROUND_MARKER = "sjtu-title-closing-background"
@@ -46,6 +48,8 @@ def _add_content_title_bar_style(html: str) -> str:
         'margin:0!important;padding:0 60px!important;border-radius:0!important;'
         'box-sizing:border-box!important;display:flex!important;align-items:center!important;'
         'background:#1E3A5F!important;color:#FFFFFF!important;z-index:1000!important;}'
+        '[data-financial-role="content-title-bar"]>h1{width:100%!important;margin:0!important;'
+        'padding:0!important;color:#FFFFFF!important;}'
         '[data-financial-role="content-title-bar"] *{color:#FFFFFF!important;}'
         '</style>'
     )
@@ -57,25 +61,50 @@ def _add_content_title_bar_style(html: str) -> str:
     )
 
 
-def _mark_content_title_bar(html: str) -> str:
-    if re.search(
-        r"\bdata-financial-role\s*=\s*(['\"])content-title-bar\1",
-        html,
-        flags=re.I,
-    ):
+def _normalize_content_title_bar(html: str, title: str) -> str:
+    """Replace model-specific title shells with one deterministic title bar."""
+
+    soup = BeautifulSoup(html, "lxml")
+    body = soup.body
+    if body is None:
         return html
-    patterns = (
-        r"<[a-z][a-z0-9:-]*\b[^>]*\bdata-element\s*=\s*(['\"])title\1[^>]*>",
-        r"<h[12]\b[^>]*>",
-        r"<[a-z][a-z0-9:-]*\b[^>]*\bclass\s*=\s*(['\"])[^'\"]*\btitle\b[^'\"]*\1[^>]*>",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, html, flags=re.I | re.S)
-        if match:
-            tag = match.group(0)
-            marked_tag = tag[:-1] + ' data-financial-role="content-title-bar">'
-            return html[: match.start()] + marked_tag + html[match.end() :]
-    return html
+
+    marker = body.select_one('[data-financial-role="content-title-bar"]')
+    if marker is None:
+        for selector in ('[data-element="title"]', "h1", "h2", ".title"):
+            marker = body.select_one(selector)
+            if marker is not None:
+                break
+
+    resolved_title = title.strip()
+    if not resolved_title:
+        raise RuntimeError("Financial content pages require a non-empty outline title.")
+
+    shell: Tag | None = marker if isinstance(marker, Tag) else None
+    if shell is not None:
+        for parent in shell.parents:
+            if parent is body or not isinstance(parent, Tag):
+                break
+            class_tokens = {str(item).casefold() for item in parent.get("class", [])}
+            if parent.name == "header" or class_tokens.intersection(
+                {"title-bar", "header-bar", "page-header", "slide-header"}
+            ):
+                shell = parent
+                break
+
+    title_bar = soup.new_tag("header")
+    title_bar["data-financial-role"] = "content-title-bar"
+    heading = soup.new_tag("h1")
+    heading.string = resolved_title
+    title_bar.append(heading)
+    if shell is not None:
+        shell.replace_with(title_bar)
+    else:
+        body.insert(0, title_bar)
+
+    for duplicate in list(body.select('[data-financial-role="content-title-bar"]'))[1:]:
+        duplicate.decompose()
+    return str(soup)
 
 
 def _add_background_art(html: str, encoded_background: str) -> tuple[str, bool]:
@@ -111,6 +140,7 @@ def _add_background_art(html: str, encoded_background: str) -> tuple[str, bool]:
 
     background_markup = (
         f'<img data-sjtu-background="{SJTU_BACKGROUND_MARKER}" alt="" aria-hidden="true" '
+        'data-memslides-pptx-background="true" '
         f'src="data:image/png;base64,{encoded_background}" '
         'style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;'
         'object-position:center;z-index:-1;display:block">'
@@ -128,6 +158,7 @@ def _add_background_art(html: str, encoded_background: str) -> tuple[str, bool]:
 def apply_page_roles_to_html(
     slide_html_dir: str | Path,
     page_roles: list[str],
+    page_titles: list[str],
 ) -> list[Path]:
     html_dir = Path(slide_html_dir).resolve()
     slide_paths = sorted(html_dir.glob("slide_*.html"))
@@ -139,7 +170,11 @@ def apply_page_roles_to_html(
             "Deck generation is incomplete before financial postprocessing: "
             f"expected {len(page_roles)} slide HTML files, found {len(slide_paths)}."
         )
-    for path, role in zip(slide_paths, page_roles, strict=True):
+    if len(page_titles) != len(slide_paths):
+        raise RuntimeError(
+            "Financial title map does not match the generated slide count."
+        )
+    for path, role, title in zip(slide_paths, page_roles, page_titles, strict=True):
         html = path.read_text(encoding="utf-8")
         body_match = re.search(r"<body\b[^>]*>", html, flags=re.I | re.S)
         if body_match:
@@ -154,9 +189,22 @@ def apply_page_roles_to_html(
                 )
             else:
                 branded_body_tag = body_tag[:-1] + f' data-page-role="{role}">'
+            slide_id = path.stem
+            if re.search(r"\bdata-slide-id\s*=", branded_body_tag, flags=re.I):
+                branded_body_tag = re.sub(
+                    r"\bdata-slide-id\s*=\s*(['\"])[^'\"]*\1",
+                    f'data-slide-id="{slide_id}"',
+                    branded_body_tag,
+                    count=1,
+                    flags=re.I,
+                )
+            else:
+                branded_body_tag = (
+                    branded_body_tag[:-1] + f' data-slide-id="{slide_id}">'
+                )
             html = html[: body_match.start()] + branded_body_tag + html[body_match.end() :]
         if role == "content":
-            html = _mark_content_title_bar(html)
+            html = _normalize_content_title_bar(html, title)
             html = _add_content_title_bar_style(html)
         path.write_text(html, encoding="utf-8")
     return slide_paths
@@ -165,11 +213,12 @@ def apply_page_roles_to_html(
 def apply_sjtu_brand_to_html(
     slide_html_dir: str | Path,
     page_roles: list[str],
+    page_titles: list[str],
 ) -> dict[str, Any]:
     """Modify financial slide HTML in place; safe to call more than once."""
 
     html_dir = Path(slide_html_dir).resolve()
-    slide_paths = apply_page_roles_to_html(html_dir, page_roles)
+    slide_paths = apply_page_roles_to_html(html_dir, page_roles, page_titles)
     if not _LOGO.is_file():
         raise RuntimeError(f"SJTU logo is missing: {_LOGO}")
     if not _BACKGROUND_ART.is_file():

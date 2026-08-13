@@ -737,9 +737,17 @@ function addSlideFromDom(pptx, slideData) {
   const slide = pptx.addSlide();
   const scale = scaleForSlide(slideData);
   const runtimeWarnings = [];
+  const slideBackgrounds = (slideData.elements || []).filter(
+    (element) => element.kind === "image" && element.slideBackground,
+  );
+  const backgroundImage = slideBackgrounds.length
+    ? sourceToImage(slideBackgrounds[0].src, slideData.htmlFile)
+    : null;
   const bodyFill = fillFromCss(slideData.body?.style?.backgroundColor);
-  slide.background = { color: bodyFill.transparency < 100 ? bodyFill.color : "FFFFFF" };
-  if (bodyFill.transparency < 100) {
+  slide.background = backgroundImage || {
+    color: bodyFill.transparency < 100 ? bodyFill.color : "FFFFFF",
+  };
+  if (!backgroundImage && bodyFill.transparency < 100) {
     slide.addShape(shapeType(pptx, "rect"), {
       x: 0,
       y: 0,
@@ -749,8 +757,28 @@ function addSlideFromDom(pptx, slideData) {
       line: { color: bodyFill.color, transparency: 100 },
     });
   }
+  if (slideBackgrounds.length > 1) {
+    runtimeWarnings.push({
+      severity: "warning",
+      code: "multiple_slide_backgrounds",
+      message: "Only the first data-memslides-pptx-background image was used.",
+      html_file: slideData.htmlFile,
+      source: "memslides_presentation_export",
+    });
+  } else if (slideBackgrounds.length && !backgroundImage) {
+    runtimeWarnings.push({
+      severity: "warning",
+      code: "slide_background_unavailable",
+      message: "The declared slide background could not be embedded.",
+      html_file: slideData.htmlFile,
+      source: "memslides_presentation_export",
+    });
+  }
 
-  const exportElements = dedupeOverlappingTextElements(slideData.elements, runtimeWarnings);
+  const exportElements = dedupeOverlappingTextElements(
+    (slideData.elements || []).filter((element) => !element.slideBackground),
+    runtimeWarnings,
+  );
   for (const element of exportElements) {
     const withFile = { ...element, htmlFile: slideData.htmlFile };
     const pos = positionFromBox(element.box, scale.x, scale.y);
