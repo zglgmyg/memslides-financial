@@ -2227,6 +2227,11 @@ async def run_generation_flow(
                 pptx_path,
                 aspect_ratio=request.powerpoint_type,
                 context_label="initial generation",
+                speaker_notes_path=(
+                    self.workspace / "speaker_manuscript.json"
+                    if _extra_info.get("financial_artifacts_read_only") is True
+                    else None
+                ),
             )
             await self._export_pdf_best_effort(
                 export_html_files,

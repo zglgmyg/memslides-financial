@@ -20,8 +20,35 @@ function usage() {
     "Options:",
     "  --validate                 Extract and map inputs without writing a PPTX.",
     "  --report <file.json>       Write per-slide export statistics and rasterization diagnostics.",
+    "  --speaker-notes <file.json> Add slide-aligned speaker scripts to PowerPoint notes.",
     "  --skip-layout-validation   Accepted for compatibility; export now records layout issues as warnings.",
   ].join("\n");
+}
+
+function loadSpeakerNotes(fileName, slideCount) {
+  if (!fileName) {
+    return [];
+  }
+  const payload = JSON.parse(fs.readFileSync(path.resolve(String(fileName)), "utf-8"));
+  const slides = Array.isArray(payload.slides) ? payload.slides : [];
+  if (slides.length > slideCount) {
+    fail(`Speaker notes count ${slides.length} exceeds slide count ${slideCount}.`);
+  }
+  const notes = slides.map((item, index) => {
+    const expectedId = `slide_${String(index + 1).padStart(3, "0")}`;
+    if (String(item.slide_id || "") !== expectedId || !String(item.script || "").trim()) {
+      fail(`Invalid speaker notes entry for ${expectedId}.`);
+    }
+    const parts = ["【演讲稿】", String(item.script).trim()];
+    const transition = String(item.transition_to_next || "").trim();
+    if (transition) {
+      parts.push("【转场提示】", transition);
+    } else if (index === slides.length - 1 && String(payload.closing || "").trim()) {
+      parts.push("【总结】", String(payload.closing).trim());
+    }
+    return parts.join("\n\n");
+  });
+  return notes.concat(Array(slideCount - notes.length).fill(""));
 }
 
 function fail(message) {
@@ -111,6 +138,7 @@ async function exportSlides({ args, htmlFiles }) {
   const outputFile = args.output ? path.resolve(String(args.output)) : "";
   const reportFile = args.report ? path.resolve(String(args.report)) : "";
   const validateOnly = Boolean(args.validate);
+  const speakerNotes = loadSpeakerNotes(args["speaker-notes"], htmlFiles.length);
   if (!htmlFiles.length) {
     fail(usage());
   }
@@ -134,6 +162,9 @@ async function exportSlides({ args, htmlFiles }) {
         tempDirs.push(...(slideData.assetTempDirs || []));
         if (!validateOnly) {
           const result = addSlideFromDom(pptx, slideData);
+          if (speakerNotes[index]) {
+            result.slide.addNotes(speakerNotes[index]);
+          }
           allWarnings.push(...result.warnings);
           reports.push(slideReport(slideData, result.warnings, index + 1));
         } else {

@@ -14,6 +14,7 @@ from memslides.integrations.research_report.generate import (
     _assert_unchanged,
     _generate_with_timeout,
     _financial_design_guidance,
+    generate_financial_deck,
     _outline_page_roles,
     _parser,
     _snapshot,
@@ -166,6 +167,27 @@ def test_generation_timeout_cli_default_and_override() -> None:
     assert parser.parse_args(required).sjtu_branding is False
     assert parser.parse_args(required + ["--generation-timeout", "15"]).generation_timeout == 15
     assert parser.parse_args(required + ["--sjtu-branding"]).sjtu_branding is True
+    citation_args = required + [
+        "--citation-units", "units.json",
+        "--citation-validation-report", "validation.json",
+        "--citation-source-catalog", "catalog.json",
+    ]
+    parsed = parser.parse_args(citation_args)
+    assert parsed.citation_model == "deepseek-v4-flash"
+    assert parsed.citation_units == Path("units.json")
+
+
+def test_financial_generation_rejects_partial_citation_inputs(tmp_path: Path) -> None:
+    with pytest.raises(FinancialGenerationError, match="requires citation units"):
+        asyncio.run(
+            generate_financial_deck(
+                outline_path=tmp_path / "outline.json",
+                visualization_manifest_path=tmp_path / "visualizations.json",
+                numeric_audit_path=tmp_path / "audit.json",
+                output_dir=tmp_path / "output",
+                citation_units_path=tmp_path / "units.json",
+            )
+        )
 
 
 def test_financial_design_guidance_preserves_roles_without_fixing_layout() -> None:

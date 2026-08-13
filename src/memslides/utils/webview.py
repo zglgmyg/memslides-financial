@@ -1382,6 +1382,7 @@ async def convert_html_to_pptx(
     output_pptx: Path | str | None = None,
     aspect_ratio: Literal["16:9", "4:3", "A1", "A2", "A3", "A4"] = "16:9",
     skip_layout_validation: bool = False,
+    speaker_notes_path: Path | str | None = None,
 ) -> Path:
     # Auto-fix unwrapped text in DIV elements before conversion
     _fix_all_html_files(html_inputs)
@@ -1400,6 +1401,8 @@ async def convert_html_to_pptx(
     html_dir, html_files = _split_html_input_for_cli(html_inputs)
     node_runtime = _resolve_pptx_export_node_runtime()
     cmd = [node_runtime.node_binary, str(script_path), "--layout", aspect_ratio]
+    if speaker_notes_path is not None:
+        cmd.extend(["--speaker-notes", str(Path(speaker_notes_path).resolve())])
     if skip_layout_validation:
         cmd.append("--skip-layout-validation")
     if html_dir is not None:
@@ -1456,6 +1459,7 @@ async def convert_html_to_pptx_with_retry(
     # image_scale_factor and text_scale_factor are provided.
     scale_factor: float | None = None,
     preserve_source_html: bool = False,
+    speaker_notes_path: Path | str | None = None,
 ) -> Path:
     """Convert HTML to PPTX, auto-shrinking content on layout validation errors.
 
@@ -1506,6 +1510,7 @@ async def convert_html_to_pptx_with_retry(
             try:
                 return await convert_html_to_pptx(
                     html_inputs, output_pptx, aspect_ratio,
+                    speaker_notes_path=speaker_notes_path,
                 )
             except RuntimeError as e:
                 last_error = e
@@ -1525,6 +1530,7 @@ async def convert_html_to_pptx_with_retry(
                         try:
                             return await convert_html_to_pptx(
                                 html_inputs, output_pptx, aspect_ratio,
+                                speaker_notes_path=speaker_notes_path,
                             )
                         except RuntimeError as retry_e:
                             last_error = retry_e
@@ -1546,6 +1552,7 @@ async def convert_html_to_pptx_with_retry(
                             try:
                                 return await convert_html_to_pptx(
                                     html_inputs, output_pptx, aspect_ratio,
+                                    speaker_notes_path=speaker_notes_path,
                                 )
                             except RuntimeError as retry_e:
                                 # 修正尺寸后仍有其他错误（如 overflow），
@@ -1627,6 +1634,7 @@ async def convert_html_to_pptx_with_retry(
                 html_inputs,
                 output_pptx,
                 aspect_ratio,
+                speaker_notes_path=speaker_notes_path,
             )
         except RuntimeError as repair_e:
             last_error = repair_e
@@ -1655,7 +1663,11 @@ async def convert_html_to_pptx_with_retry(
                 warning(f"Failed to record layout overflow (non-fatal): {e}")
 
         return await convert_html_to_pptx(
-            html_inputs, output_pptx, aspect_ratio, skip_layout_validation=True,
+            html_inputs,
+            output_pptx,
+            aspect_ratio,
+            skip_layout_validation=True,
+            speaker_notes_path=speaker_notes_path,
         )
     finally:
         if preserve_source_html:

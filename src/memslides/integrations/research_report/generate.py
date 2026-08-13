@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from html import unescape
@@ -349,6 +350,10 @@ async def generate_financial_deck(
     instruction: str = "",
     generation_timeout: float = DEFAULT_GENERATION_TIMEOUT_SECONDS,
     sjtu_branding: bool = False,
+    citation_units_path: str | Path | None = None,
+    citation_validation_path: str | Path | None = None,
+    citation_source_catalog_path: str | Path | None = None,
+    citation_model: str = "deepseek-v4-flash",
 ) -> FinancialGenerationResult:
     """Run audited adaptation, DeckDesigner, repair, and PPTX/PDF export."""
 
@@ -358,6 +363,15 @@ async def generate_financial_deck(
     if stale_pptx:
         raise FinancialGenerationError(
             f"Output workspace already contains a PPTX; use a fresh directory: {workspace}"
+        )
+    citation_paths = (
+        citation_units_path,
+        citation_validation_path,
+        citation_source_catalog_path,
+    )
+    if any(citation_paths) and not all(citation_paths):
+        raise FinancialGenerationError(
+            "Citation integration requires citation units, validation report, and source catalog."
         )
 
     adaptation = adapt_research_report(
@@ -443,8 +457,34 @@ async def generate_financial_deck(
         slide_count,
         page_roles=page_roles,
     )
+    if all(citation_paths):
+        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if not api_key:
+            raise FinancialGenerationError("DEEPSEEK_API_KEY is required for citation matching.")
+        from memslides.integrations.research_report.citation_sidecar import (
+            run_citation_sidecar,
+        )
+        from memslides.utils.webview import convert_html_to_pptx
+
+        run_citation_sidecar(
+            slide_html_dir,
+            outline_path,
+            citation_units_path,
+            citation_validation_path,
+            citation_source_catalog_path,
+            api_key=api_key,
+            model=citation_model,
+        )
+        await convert_html_to_pptx(
+            slide_html_dir,
+            pptx_path,
+            request.powerpoint_type,
+            speaker_notes_path=workspace / "speaker_manuscript.json",
+        )
     pdf_path = Path(deck_result.pdf_path).resolve() if deck_result.pdf_path else None
     if pdf_path is not None and not pdf_path.is_file():
+        pdf_path = None
+    if all(citation_paths):
         pdf_path = None
 
     receipt_path = workspace / "financial_generation_receipt.json"
@@ -464,6 +504,7 @@ async def generate_financial_deck(
                         if sjtu_branding
                         else ""
                     ),
+                    "citations_applied": bool(all(citation_paths)),
                 },
                 "integrity": {
                     "status": "passed",
@@ -510,6 +551,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply optional SJTU colors and seal to financial HTML before export",
     )
+    parser.add_argument("--citation-units", type=Path)
+    parser.add_argument("--citation-validation-report", type=Path)
+    parser.add_argument("--citation-source-catalog", type=Path)
+    parser.add_argument("--citation-model", default="deepseek-v4-flash")
     return parser
 
 
@@ -525,6 +570,10 @@ def main() -> int:
             instruction=args.instruction,
             generation_timeout=args.generation_timeout,
             sjtu_branding=args.sjtu_branding,
+            citation_units_path=args.citation_units,
+            citation_validation_path=args.citation_validation_report,
+            citation_source_catalog_path=args.citation_source_catalog,
+            citation_model=args.citation_model,
         )
     )
     print(
