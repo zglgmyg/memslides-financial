@@ -2031,6 +2031,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
         preferred_agent: Any | None = None,
         max_repair_rounds: int = 2,
         max_agent_turns: int = 3,
+        speaker_notes_path: Path | str | None = None,
     ) -> tuple[Path, list[Path]]:
         try:
             max_repair_rounds = max(0, int(os.getenv("MEMSLIDES_EXPORT_STRICT_REPAIR_ROUNDS", str(max_repair_rounds)) or max_repair_rounds))
@@ -2079,6 +2080,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
                     session_id=str(self.workspace.stem),
                     experience_writer=_exp_writer,
                     allow_skip_layout_validation_fallback=False,
+                    speaker_notes_path=speaker_notes_path,
                 )
                 self.intermediate_output["export_status"] = "strict"
                 self.intermediate_output["export_warnings"] = []
@@ -2128,6 +2130,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
                     session_id=str(self.workspace.stem),
                     experience_writer=_exp_writer,
                     allow_skip_layout_validation_fallback=True,
+                    speaker_notes_path=speaker_notes_path,
                 )
                 warning_text += " Relaxed PPTX fallback was used."
             except Exception as relaxed_error:
