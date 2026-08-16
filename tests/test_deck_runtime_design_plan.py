@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 from memslides.tools import deck_runtime
+
+
+def _bottom_safe_zone_violations(html: str):
+    soup = BeautifulSoup(html, "lxml")
+    css_rules = deck_runtime._parse_css_rules(
+        deck_runtime._extract_all_style_text(html)
+    )
+    return deck_runtime._bottom_safe_zone_violations(soup.body, css_rules)
 
 
 def test_design_plan_accepts_suffix_numbered_and_cjk_heading_variants() -> None:
@@ -112,3 +122,40 @@ def test_write_html_rejects_history_compaction_marker_before_writing(tmp_path: P
 
     assert "WRITE_HTML_TRUNCATED_PLACEHOLDER" in result
     assert not output.exists()
+
+
+def test_small_footer_remains_in_the_footer_lane() -> None:
+    html = """<html><body><footer style="position:absolute;bottom:18px;font-size:13px">
+    Source note
+    </footer></body></html>"""
+
+    assert _bottom_safe_zone_violations(html) == []
+
+    repaired, report = deck_runtime.repair_slide_layout_static(html)
+
+    assert "bottom:18px" in repaired.replace(" ", "")
+    assert not any("raise positioned text" in item.get("reason", "") for item in report)
+
+
+def test_large_footer_still_respects_the_bottom_safe_zone() -> None:
+    html = """<html><body><footer style="position:absolute;bottom:18px;font-size:18px">
+    Large footer
+    </footer></body></html>"""
+
+    violations = _bottom_safe_zone_violations(html)
+
+    assert len(violations) == 1
+    assert violations[0][0].name == "footer"
+    assert violations[0][1] == 18
+
+
+def test_large_body_text_still_respects_the_bottom_safe_zone() -> None:
+    html = """<html><body><p style="position:absolute;bottom:18px;font-size:18px">
+    Large body text
+    </p></body></html>"""
+
+    violations = _bottom_safe_zone_violations(html)
+
+    assert len(violations) == 1
+    assert violations[0][0].name == "p"
+    assert violations[0][1] == 18

@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from memslides.utils.config import MemSlidesConfig
 from memslides.utils.log import error, info, set_logger, warning
 from memslides.utils.webview import (
+    PlaywrightConverter,
     _get_expected_playwright_binary,
     convert_html_to_pptx_with_retry,
     should_auto_install_playwright,
@@ -1704,6 +1705,7 @@ _REPAIR_INTENTS = {
     "overlap",
     "readability",
     "image_fit",
+    "underfill",
     "none",
 }
 _LAYOUT_REPAIR_INTENTS = {
@@ -1711,6 +1713,7 @@ _LAYOUT_REPAIR_INTENTS = {
     "clipped_canvas",
     "text_overflow",
     "overlap",
+    "underfill",
 }
 _TYPOGRAPHY_LAYOUT_REPAIR_INTENTS = {
     "bottom_safe_zone",
@@ -1727,6 +1730,7 @@ _REPAIR_INTENT_BY_DIAGNOSTIC_CODE = {
     "text_overflow": "text_overflow",
     "off_canvas_absolute": "clipped_canvas",
     "image_overflow": "image_fit",
+    "excessive_bottom_whitespace": "underfill",
 }
 _RECOMMENDED_PATCH_STRATEGIES: dict[str, list[str]] = {
     "bottom_safe_zone": ["nudge_ancestor_up", "tighten_vertical_gap", "reduce_container_height"],
@@ -1735,6 +1739,7 @@ _RECOMMENDED_PATCH_STRATEGIES: dict[str, list[str]] = {
     "overlap": ["separate_overlapping_blocks", "nudge_ancestor_up"],
     "readability": ["add_local_backplate", "increase_local_contrast"],
     "image_fit": ["tighten_image_frame", "reduce_outside_offset"],
+    "underfill": ["rebalance_vertical_layout", "redistribute_content_blocks", "anchor_takeaway_near_safe_bottom"],
     "none": [],
 }
 _SEMANTIC_GROUP_DISPLAY = {
@@ -6847,11 +6852,7 @@ def _bottom_safe_zone_violations(
         if bottom is None or not (0 < bottom < min_bottom_px):
             continue
         font_size = _parse_css_pixel_value(props.get("font-size", ""))
-        if (
-            font_size is not None
-            and font_size <= 16
-            and not (_tag_has_any_class(tag, _FOOTER_TARGET_CLASSES) or tag.name.lower() == "footer")
-        ):
+        if font_size is not None and font_size <= 16:
             continue
         violations.append((tag, bottom))
     return sorted(violations, key=lambda item: (item[1], -_tag_depth(item[0]), _selector_hint_for_tag(item[0])))
@@ -13293,6 +13294,95 @@ async def _run_profile_page_verifier(
     return detail_payload
 
 
+def _excessive_bottom_whitespace_diagnostic(metrics: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return a repairable diagnostic for content pages that collapse toward the top."""
+    if not metrics or metrics.get("page_role") != "content":
+        return None
+    bottom_gap = float(metrics.get("bottom_gap", 0) or 0)
+    occupied_ratio = float(metrics.get("occupied_ratio", 1) or 1)
+    text_chars = int(metrics.get("text_chars", 0) or 0)
+    if text_chars < 180 or bottom_gap < 120 or occupied_ratio > 0.74:
+        return None
+    return {
+        "code": "excessive_bottom_whitespace",
+        "severity": "error",
+        "source": "rendered_geometry",
+        "message": (
+            f"Meaningful content ends {bottom_gap:.0f}px above the bottom safe edge "
+            f"and occupies only {occupied_ratio:.0%} of the usable content height. "
+            "Rebalance or redistribute the existing content vertically; do not fill the gap by merely scaling assets or adding decorative padding."
+        ),
+        "bottom_gap_px": round(bottom_gap, 1),
+        "occupied_ratio": round(occupied_ratio, 3),
+        "repair_intent": "underfill",
+        "recommended_patch_strategy": _RECOMMENDED_PATCH_STRATEGIES["underfill"],
+    }
+
+
+async def _measure_rendered_content_occupancy(
+    html_path: Path,
+    *,
+    aspect_ratio: str,
+) -> dict[str, Any] | None:
+    """Measure meaningful foreground content without treating empty cards as content."""
+    size_map = {
+        "16:9": (1280, 720),
+        "4:3": (960, 720),
+        "A1": (2244, 3178),
+        "A2": (1587, 2244),
+        "A3": (1122, 1587),
+        "A4": (794, 1123),
+    }
+    width, height = size_map.get(aspect_ratio, (1280, 720))
+    try:
+        async with PlaywrightConverter() as converter:
+            page = converter.page
+            await page.set_viewport_size({"width": width, "height": height})
+            await page.goto(html_path.resolve().as_uri(), wait_until="load", timeout=15_000)
+            await page.wait_for_timeout(100)
+            return await page.evaluate(
+                """
+                ({ width, height }) => {
+                  const body = document.body;
+                  const titleBar = body.querySelector('[data-financial-role="content-title-bar"]');
+                  const role = (body.dataset.pageRole || (titleBar ? 'content' : '')).toLowerCase();
+                  const titleBottom = titleBar ? titleBar.getBoundingClientRect().bottom : 0;
+                  const safeBottom = height - 48;
+                  const ignored = '.foot,.footer,.source,.sources,.citation,.citations,[data-financial-role="source"],[data-financial-role="content-title-bar"],#sjtu-financial-brand-mark,[data-sjtu-background]';
+                  const nodes = [...body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,img,svg,canvas,table')];
+                  const rects = [];
+                  let textChars = 0;
+                  for (const node of nodes) {
+                    if (node.closest(ignored)) continue;
+                    const style = getComputedStyle(node);
+                    const rect = node.getBoundingClientRect();
+                    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) continue;
+                    if (rect.width <= 1 || rect.height <= 1 || rect.bottom <= titleBottom || rect.top >= safeBottom) continue;
+                    const isMedia = ['IMG', 'SVG', 'CANVAS', 'TABLE'].includes(node.tagName);
+                    const text = (node.innerText || node.textContent || '').trim();
+                    if (!isMedia && !text) continue;
+                    if (!isMedia) textChars += text.length;
+                    rects.push({ top: Math.max(rect.top, titleBottom), bottom: Math.min(rect.bottom, safeBottom) });
+                  }
+                  if (!rects.length) return { page_role: role, text_chars: textChars, bottom_gap: 0, occupied_ratio: 1 };
+                  const contentTop = Math.min(...rects.map(item => item.top));
+                  const contentBottom = Math.max(...rects.map(item => item.bottom));
+                  const usableHeight = Math.max(1, safeBottom - titleBottom);
+                  return {
+                    page_role: role,
+                    text_chars: textChars,
+                    bottom_gap: Math.max(0, safeBottom - contentBottom),
+                    occupied_ratio: Math.max(0, contentBottom - contentTop) / usableHeight,
+                  };
+                }
+                """,
+                {"width": width, "height": height},
+            )
+    except Exception as exc:
+        warning(f"Rendered content occupancy check skipped for {html_path.name}: {exc}")
+        return None
+
+
 @mcp.tool()
 async def inspect_slide(
     html_file: str,
@@ -13480,6 +13570,34 @@ async def inspect_slide(
                     + repeated_note
                 )
             return f"❌ Render failed: {e}"
+
+        occupancy = await _measure_rendered_content_occupancy(
+            html_path,
+            aspect_ratio=aspect_ratio,
+        )
+        whitespace_diagnostic = _excessive_bottom_whitespace_diagnostic(occupancy)
+        if whitespace_diagnostic:
+            diagnostics.append(whitespace_diagnostic)
+            message = "VISUAL_QUALITY_FAILED: " + str(whitespace_diagnostic["message"])
+            _record_slide_validation_result(
+                html_path,
+                success=False,
+                message=message,
+                aspect_ratio=aspect_ratio,
+                diagnostics=diagnostics,
+            )
+            try:
+                from memslides.runtime.deck_execution_state import record_slide_inspected
+
+                record_slide_inspected(html_path, success=False)
+            except Exception:
+                pass
+            return (
+                "❌ Visual quality failed.\n"
+                f"- excessive_bottom_whitespace: {whitespace_diagnostic['message']}\n\n"
+                "Recompose this page so its existing information forms a balanced vertical layout. "
+                "You may increase useful explanation or rearrange the content, but do not solve it by simply enlarging an asset, adding empty decoration, or shrinking the whole composition."
+            )
 
     # ── 3. Extract HTML properties ───────────────────────────────────
     try:

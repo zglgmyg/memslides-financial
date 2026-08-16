@@ -42,7 +42,7 @@ html, body {{ width: 1280px; height: 720px; margin: 0; overflow: hidden; }}
 body {{ position: relative; background: #F8FAFC; color: #0F172A;
   font-family: Arial, 'Microsoft YaHei', sans-serif; }}
 .appendix-title-bar {{ height: 96px; padding: 0 80px; display: flex;
-  align-items: center; background: #A62038; }}
+  align-items: center; background: #1E3A5F; }}
 .appendix-title {{ margin: 0; color: #FFFFFF; font-size: 32px;
   line-height: 1; font-weight: 700; }}
 .appendix-content {{ position: absolute; top: 124px; left: 80px; right: 80px;

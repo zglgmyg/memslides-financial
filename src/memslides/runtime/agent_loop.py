@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from memslides.agents.deck_designer import DeckDesigner
 from memslides.agents.env import AgentEnv
@@ -1826,7 +1826,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
         return self._ensure_modifyagent_loaded(load_reason="export repair")
 
     def _extract_export_failure_slide(self, error_text: str) -> Path | None:
-        match = re.search(r"(/\S+\.html)", error_text)
+        match = re.search(r"((?:[A-Za-z]:)?[/\\]\S+\.html)", error_text)
         if not match:
             return None
         try:
@@ -2032,6 +2032,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
         max_repair_rounds: int = 2,
         max_agent_turns: int = 3,
         speaker_notes_path: Path | str | None = None,
+        pre_export_hook: Callable[[Path], Any] | None = None,
     ) -> tuple[Path, list[Path]]:
         try:
             max_repair_rounds = max(0, int(os.getenv("MEMSLIDES_EXPORT_STRICT_REPAIR_ROUNDS", str(max_repair_rounds)) or max_repair_rounds))
@@ -2056,6 +2057,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
 
         repair_agent = preferred_agent if isinstance(preferred_agent, RevisionEditor) else None
         last_error: Exception | None = None
+        pre_export_failed = False
 
         for repair_round in range(max_repair_rounds + 1):
             resolved_slide_dir = (
@@ -2072,6 +2074,10 @@ class AgentLoop(_AgentLoopRuntimeBindings):
                 )
 
             try:
+                hook_completed = pre_export_hook is None
+                if pre_export_hook is not None:
+                    pre_export_hook(resolved_slide_dir)
+                    hook_completed = True
                 _exp_writer = self._make_exp_writer()
                 await convert_html_to_pptx_with_retry(
                     export_html_files,
@@ -2088,6 +2094,7 @@ class AgentLoop(_AgentLoopRuntimeBindings):
                 return resolved_slide_dir, export_html_files
             except Exception as e:
                 last_error = e
+                pre_export_failed = not hook_completed
                 if repair_round >= max_repair_rounds:
                     break
 
@@ -2119,6 +2126,8 @@ class AgentLoop(_AgentLoopRuntimeBindings):
                 resolved_slide_dir = repaired_dir
 
         export_html_files = self._resolve_exportable_slide_paths(resolved_slide_dir)
+        if pre_export_failed and last_error is not None:
+            raise last_error
         if allow_relaxed_fallback and export_html_files:
             warning_text = f"PPTX strict export failed during {context_label}: {last_error}"
             try:

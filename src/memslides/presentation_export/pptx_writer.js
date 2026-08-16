@@ -569,9 +569,24 @@ function addLinkedSvgBasic(slide, pptx, element, pos, warnings) {
 
 function addImage(slide, pptx, element, pos, warnings) {
   let image = null;
-  if (element.snapshotPath && fs.existsSync(element.snapshotPath)) {
+  const vectorImage = element.pptxVectorSrc
+    ? sourceToImage(element.pptxVectorSrc, element.htmlFile)
+    : null;
+  if (vectorImage) {
+    image = vectorImage;
+  } else if (element.snapshotPath && fs.existsSync(element.snapshotPath)) {
     image = { path: element.snapshotPath };
   } else {
+    if (element.pptxVectorSrc) {
+      warnings.push({
+        severity: "warning",
+        code: "vector_source_unavailable",
+        message: "Trusted generated SVG was unavailable; falling back to the HTML preview source.",
+        html_file: element.htmlFile || "",
+        source: "memslides_presentation_export",
+        vector_src: element.pptxVectorSrc,
+      });
+    }
     if (element.preferRaster) {
       warnings.push({
         severity: "warning",
@@ -597,7 +612,7 @@ function addImage(slide, pptx, element, pos, warnings) {
     addPlaceholder(slide, pptx, pos, element.alt || "Missing image");
     return;
   }
-  if (!element.preferRaster && addLinkedSvgBasic(slide, pptx, element, pos, warnings)) {
+  if (!element.preferRaster && !element.pptxVectorSrc && addLinkedSvgBasic(slide, pptx, element, pos, warnings)) {
     return;
   }
   const fit = String(element.style?.objectFit || "").toLowerCase();

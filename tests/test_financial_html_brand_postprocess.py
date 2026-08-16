@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from bs4 import BeautifulSoup
+
 from memslides.integrations.research_report.generate import _validate_slide_html_dir
 from memslides.integrations.research_report.html_brand_postprocess import (
-    SJTU_BACKGROUND_MARKER,
     SJTU_LOGO_MARKER,
     apply_page_roles_to_html,
     apply_sjtu_brand_to_html,
@@ -39,34 +41,33 @@ def test_optional_html_branding_runs_before_export_and_is_idempotent(tmp_path: P
     cover = (slides / "slide_01.html").read_text(encoding="utf-8")
     content = (slides / "slide_02.html").read_text(encoding="utf-8")
     closing = (slides / "slide_03.html").read_text(encoding="utf-8")
-    assert "background:transparent" in cover
+    assert "background:#1E3A5F" in cover
     assert 'data-page-role="content"' in content
-    assert 'background:#1E3A5F!important' in content
-    assert 'color:#FFFFFF!important' in content
-    assert 'position:fixed!important;top:0!important' in content
-    assert 'left:0!important;right:0!important;width:100%!important' in content
-    assert 'height:72px!important' in content
+    assert 'position:absolute;left:8%;top:12%;background:#1E3A5F;color:#FFFFFF' in content
+    assert "position:fixed!important" not in content
+    assert "financial-content-title-bar-style" not in content
     assert "height:48px;width:auto" in content
     assert "border-radius:50%" not in content
     assert "#DBEAFE" in content
     assert "#CBD5E1" in content
     assert "#475569" in content
-    assert "background:transparent" in closing
-    assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' in cover
-    assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' in closing
-    assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' not in content
-    assert '<img data-sjtu-background="sjtu-title-closing-background"' in cover
-    assert "width:100%;height:100%;object-fit:cover" in cover
-    assert "background:transparent" in cover
-    assert "isolation:isolate" in cover
-    assert '<img data-sjtu-background="sjtu-title-closing-background"' in closing
+    assert "background:rgb(30,58,95)" in closing
+    assert "data-sjtu-background" not in cover
+    assert "data-sjtu-background" not in closing
     assert f'id="{SJTU_LOGO_MARKER}"' not in cover
     assert content.count(f'id="{SJTU_LOGO_MARKER}"') == 1
     assert f'id="{SJTU_LOGO_MARKER}"' not in closing
     assert first["logos_added"] == 1
     assert second["logos_added"] == 0
-    assert first["backgrounds_added"] == 2
+    assert first["backgrounds_added"] == 0
     assert second["backgrounds_added"] == 0
+
+    soup = BeautifulSoup(content, "lxml")
+    title_bar = soup.select_one('[data-financial-role="content-title-bar"]')
+    assert title_bar is not None
+    assert title_bar.find(id=SJTU_LOGO_MARKER) is not None
+    assert title_bar.find(id=SJTU_LOGO_MARKER).parent is title_bar
+    assert "top:50%;transform:translateY(-50%)" in content
 
     _validate_slide_html_dir(
         slides,
@@ -75,7 +76,7 @@ def test_optional_html_branding_runs_before_export_and_is_idempotent(tmp_path: P
     )
 
 
-def test_background_art_applies_to_title_and_closing_only(tmp_path: Path) -> None:
+def test_branding_preserves_title_and_closing_html(tmp_path: Path) -> None:
     slides = tmp_path / "outputs"
     slides.mkdir()
     (slides / "slide_01.html").write_text(
@@ -98,19 +99,15 @@ def test_background_art_applies_to_title_and_closing_only(tmp_path: Path) -> Non
         ["Gradient cover", "Title", "End"],
     )
 
-    assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' in (
-        slides / "slide_01.html"
-    ).read_text(encoding="utf-8")
-    assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' not in (
-        slides / "slide_02.html"
-    ).read_text(encoding="utf-8")
-    assert f'data-sjtu-background="{SJTU_BACKGROUND_MARKER}"' in (
-        slides / "slide_03.html"
-    ).read_text(encoding="utf-8")
-    assert report["backgrounds_added"] == 2
+    cover = (slides / "slide_01.html").read_text(encoding="utf-8")
+    closing = (slides / "slide_03.html").read_text(encoding="utf-8")
+    assert "linear-gradient(90deg,#1E3A5F,#2563EB)" in cover
+    assert "background:#FFFFFF" in closing
+    assert "data-sjtu-background" not in cover + closing
+    assert report["backgrounds_added"] == 0
 
 
-def test_financial_postprocessing_sets_page_roles_when_designer_omits_them(
+def test_financial_postprocessing_sets_page_roles_without_rebuilding_title_bar(
     tmp_path: Path,
 ) -> None:
     slides = tmp_path / "outputs"
@@ -120,7 +117,7 @@ def test_financial_postprocessing_sets_page_roles_when_designer_omits_them(
         encoding="utf-8",
     )
     (slides / "slide_02.html").write_text(
-        '<html><body><div data-element="title"><h1>Title</h1></div>Body</body></html>',
+        '<html><body><div data-financial-role="content-title-bar" style="position:absolute;top:7px"><h1>Original title</h1></div>Body</body></html>',
         encoding="utf-8",
     )
 
@@ -131,4 +128,27 @@ def test_financial_postprocessing_sets_page_roles_when_designer_omits_them(
     assert 'data-page-role="title"' in html
     assert 'data-page-role="content"' in content
     assert 'data-financial-role="content-title-bar"' in content
-    assert 'background:#1E3A5F!important' in content
+    assert "Original title" in content
+    assert "position:absolute;top:7px" in content
+    assert "financial-content-title-bar-style" not in content
+
+
+def test_branding_reports_the_invalid_content_slide_path(tmp_path: Path) -> None:
+    slides = tmp_path / "outputs"
+    slides.mkdir()
+    (slides / "slide_01.html").write_text(
+        "<html><body>Cover</body></html>",
+        encoding="utf-8",
+    )
+    broken = slides / "slide_02.html"
+    broken.write_text(
+        "<html><body><p>CSS was emitted as visible text.</p></body></html>",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match=r"slide_02\.html.*exactly one title bar"):
+        apply_sjtu_brand_to_html(
+            slides,
+            ["title", "content"],
+            ["Cover", "Broken content"],
+        )

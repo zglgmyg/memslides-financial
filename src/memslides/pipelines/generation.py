@@ -857,6 +857,10 @@ def _render_guidance_for_slide(slide: dict[str, Any]) -> list[str]:
     if visual_requirement == "required" and bound_asset_kind in {"figure", "table", "chart"}:
         guidance.append("Make the bound asset the primary visual block; it should dominate the page before bullets do.")
         guidance.append("Place explanatory text on a light readable surface panel and keep it to 2-3 tight bullets or one short takeaway block.")
+        if bound_asset_kind in {"figure", "chart"}:
+            guidance.append(
+                "When the page has one wide visual plus explanatory text, prefer a side-by-side composition with text on the left and the visual on the right; let readability determine the column widths, preserve the visual's aspect ratio, and do not stack the blocks unless they fit without overflow."
+            )
         if bound_asset_kind in {"table", "chart"}:
             guidance.append("Preserve table/chart legibility: allocate enough width and height for labels, and summarize the takeaway beside or below it instead of shrinking the asset.")
         else:
@@ -1861,6 +1865,12 @@ async def run_generation_flow(
                             "using the runtime-provided `<financial_deck_source_index>`.\n"
                             "- Do not inspect manuscript, speaker, evidence, or metadata files; "
                             "page-relevant inputs arrive in `<current_page_source>`.\n"
+                            "- Use content titles at 26-30px with font-weight 700, body text at 18-20px, "
+                            "and citations or footnotes at 13-14px; keep body text at or above 16px where possible.\n"
+                            "- Emphasize important conclusions or key data through font size, font weight, "
+                            "color, or a dark emphasis surface.\n"
+                            "- Avoid excessive empty space on each page; keep the composition visually pleasing "
+                            "and easy for people to read and understand.\n"
                             "- Read back the latest design plan, then begin the active page."
                         )
 
@@ -2204,14 +2214,16 @@ async def run_generation_flow(
                 _financial_page_titles = list(
                     _extra_info["financial_page_titles"]
                 )
-                apply_page_roles_to_html(
-                    slide_html_dir,
-                    _financial_page_roles,
-                    _financial_page_titles,
-                )
-                if _extra_info.get("sjtu_html_branding") is True:
+                def _prepare_financial_html_for_export(current_slide_dir: Path) -> None:
+                    apply_page_roles_to_html(
+                        current_slide_dir,
+                        _financial_page_roles,
+                        _financial_page_titles,
+                    )
+                    if _extra_info.get("sjtu_html_branding") is not True:
+                        return
                     _brand_report = apply_sjtu_brand_to_html(
-                        slide_html_dir,
+                        current_slide_dir,
                         _financial_page_roles,
                         _financial_page_titles,
                     )
@@ -2221,6 +2233,8 @@ async def run_generation_flow(
                         encoding="utf-8",
                     )
                     self.intermediate_output["sjtu_html_brand_report"] = str(_brand_report_path)
+            else:
+                _prepare_financial_html_for_export = None
             pptx_path = self.workspace / f"{md_file.stem}.pptx"
             slide_html_dir, export_html_files = await self._export_slides_with_agent_repair(
                 slide_html_dir,
@@ -2232,6 +2246,7 @@ async def run_generation_flow(
                     if _extra_info.get("financial_artifacts_read_only") is True
                     else None
                 ),
+                pre_export_hook=_prepare_financial_html_for_export,
             )
             await self._export_pdf_best_effort(
                 export_html_files,

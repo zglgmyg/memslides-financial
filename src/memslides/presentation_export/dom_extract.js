@@ -440,6 +440,18 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
           return text.replace(/\\/g, "/");
         }
 
+        function pptxVectorSourceFor(src) {
+          const fingerprint = sourceFingerprint(src);
+          if (!fingerprint.includes("/generated_visuals/")) {
+            return "";
+          }
+          const match = /\/(chart|table)_[^/?#]+\.(svg|png)(?=$|[?#])/i.exec(fingerprint);
+          if (!match) {
+            return "";
+          }
+          return String(src || "").replace(/\.png(?=$|[?#])/i, ".svg");
+        }
+
         function visualKindFor(src, alt = "", className = "") {
           const text = sourceFingerprint(src, alt, className);
           if (/(^|[\/_\-\s])flow-?chart([\/_\-\s.]|$)/.test(text) || /(^|[\/_\-\s])flow([\/_\-\s.]|$)/.test(text)) {
@@ -461,6 +473,9 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
         }
 
         function shouldRasterizeImage(element, src, style) {
+          if (pptxVectorSourceFor(src)) {
+            return "";
+          }
           const mode = effectiveVisualMode(element);
           if (mode === "editable") {
             return "";
@@ -469,7 +484,6 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
             return "image";
           }
           const kind = visualKindFor(src, element.getAttribute("alt") || "", element.className || "");
-          const isSvg = /\.svg(?:$|[?#])/i.test(String(src || ""));
           if (kind) {
             return kind;
           }
@@ -482,14 +496,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
           ) {
             return "image_style";
           }
-          if (isSvg && svgSourceLooksComplex(src)) {
-            return "svg";
-          }
           return "";
-        }
-
-        function svgSourceLooksComplex(src) {
-          return !/\.svg(?:$|[?#])/i.test(String(src || "")) ? false : sourceFingerprint(src).includes("/generated_visuals/");
         }
 
         function svgIsComplex(svg) {
@@ -1127,6 +1134,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
             const slideBackground = String(element.getAttribute("data-memslides-pptx-background") || "")
               .trim()
               .toLowerCase() === "true";
+            const pptxVectorSrc = slideBackground ? "" : pptxVectorSourceFor(src);
             const visualKind = slideBackground ? "" : shouldRasterizeImage(element, src, style);
             const snapshotId = visualKind ? registerRasterTarget(element, domIndex, visualKind, tag) : "";
             if (!src || !loaded) {
@@ -1150,6 +1158,7 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
               visualMode,
               visualKind,
               snapshotId,
+              pptxVectorSrc,
               slideBackground,
             });
             continue;
