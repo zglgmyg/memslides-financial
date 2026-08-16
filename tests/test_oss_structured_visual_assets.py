@@ -77,6 +77,49 @@ def test_flowchart_asset_supports_labeled_edges_and_layout_metadata(tmp_path: Pa
     assert "attention" in svg_text
 
 
+def test_chart_moves_titles_over_20_visible_characters_outside_canvas(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sv, "vlc", None)
+    long_title = "**这是超过二十个可见字符的分析性结论应交给设计师排版**"
+
+    result = sv.render_chart_asset_impl(
+        chart_type="line",
+        rows=[{"年份": "2024A", "销量": 210}, {"年份": "2025E", "销量": 450}],
+        x_field="年份",
+        y_fields=["销量"],
+        title=long_title,
+        output_format="svg",
+        workspace=tmp_path,
+    )
+
+    svg_text = Path(result["svg_path"]).read_text(encoding="utf-8")
+    meta = json.loads(Path(result["meta_path"]).read_text(encoding="utf-8"))
+    assert result["chart_title"] == ""
+    assert result["external_caption"] == long_title
+    assert long_title not in svg_text
+    assert meta["external_caption"] == long_title
+
+
+def test_chart_keeps_short_title_inside_canvas(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sv, "vlc", None)
+    short_title = "产销量预测"
+
+    result = sv.render_chart_asset_impl(
+        chart_type="line",
+        rows=[{"年份": "2024A", "销量": 210}, {"年份": "2025E", "销量": 450}],
+        x_field="年份",
+        y_fields=["销量"],
+        title=short_title,
+        output_format="svg",
+        workspace=tmp_path,
+    )
+
+    assert result["chart_title"] == short_title
+    assert result["external_caption"] == ""
+    assert short_title in Path(result["svg_path"]).read_text(encoding="utf-8")
+
+
 def test_render_table_asset_accepts_aliases_and_routes_chart_like_calls(tmp_path: Path, monkeypatch) -> None:
     from memslides.tools import asset_services
 

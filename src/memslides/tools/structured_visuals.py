@@ -72,6 +72,12 @@ def _slugify(value: str) -> str:
     return text.lower() or "visual"
 
 
+def _chart_canvas_text(value: str, *, max_visible_chars: int = 20) -> str:
+    """Keep only short audience-facing labels inside a chart canvas."""
+    visible = re.sub(r"[*_`#]+", "", str(value or "")).strip()
+    return visible if len(visible) <= max_visible_chars else ""
+
+
 def _json_hash(payload: dict[str, Any]) -> str:
     normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
@@ -579,11 +585,14 @@ def build_chart_spec(
     )
     x_type = _infer_vega_type([row.get(resolved_x_field) for row in dataset])
     y_type = _infer_vega_type([row.get(resolved_y_field) for row in dataset])
+    canvas_title = _chart_canvas_text(title)
+    canvas_subtitle = _chart_canvas_text(subtitle)
+    canvas_note = _chart_canvas_text(note)
     title_payload: str | dict[str, Any] | None = None
-    if title or subtitle:
+    if canvas_title:
         title_payload = {
-            "text": title or chart_kind.replace("_", " ").title(),
-            "subtitle": [text for text in [subtitle, note] if text],
+            "text": canvas_title,
+            "subtitle": [text for text in [canvas_subtitle, canvas_note] if text],
             "anchor": "start",
             "color": theme.get("text_color", "#0f172a"),
             "font": theme.get("title_font", DEFAULT_FONT_STACK),
@@ -1534,6 +1543,18 @@ def render_chart_asset_impl(
     workspace_path = _workspace_path(workspace)
     source_rows = load_chart_rows(rows=rows, csv_text=csv_text, csv_path=csv_path, workspace=workspace_path)
     theme = resolve_visual_theme(config=config, style_overrides=style_overrides)
+    canvas_title = _chart_canvas_text(title)
+    canvas_subtitle = _chart_canvas_text(subtitle)
+    canvas_note = _chart_canvas_text(note)
+    external_caption = "\n".join(
+        original.strip()
+        for original, canvas_value in (
+            (title, canvas_title),
+            (subtitle, canvas_subtitle),
+            (note, canvas_note),
+        )
+        if original.strip() and not canvas_value
+    )
     spec = build_chart_spec(
         chart_type=chart_type,
         source_rows=source_rows,
@@ -1567,6 +1588,7 @@ def render_chart_asset_impl(
         "note": note,
         "width": int(width),
         "height": int(height),
+        "chart_title_policy": "max_20_visible_chars",
         "style": theme,
     }
     spec_hash = _json_hash(cache_payload)
@@ -1590,8 +1612,8 @@ def render_chart_asset_impl(
                 source_rows=source_rows,
                 x_field=x_field,
                 y_fields=y_fields,
-                title=title,
-                subtitle=subtitle,
+                title=canvas_title,
+                subtitle=canvas_subtitle,
                 width=width,
                 height=height,
                 theme=theme,
@@ -1624,6 +1646,8 @@ def render_chart_asset_impl(
         "renderer": "vega-lite+vl-convert" if vlc is not None else "vega-lite+fallback-svg",
         "spec_hash": spec_hash,
         "title": title or chart_type.replace("_", " ").title(),
+        "chart_title": canvas_title,
+        "external_caption": external_caption,
         "svg_path": rendered_paths.get("svg"),
         "png_path": rendered_paths.get("png"),
         "spec_path": str(spec_path.resolve()),
@@ -1650,6 +1674,8 @@ def render_chart_asset_impl(
         "renderer": result["renderer"],
         "spec_hash": spec_hash,
         "title": result["title"],
+        "chart_title": canvas_title,
+        "external_caption": external_caption,
         "data_fields": {
             "x_field": x_field,
             "y_fields": list(y_fields),

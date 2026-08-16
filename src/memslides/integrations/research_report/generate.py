@@ -404,8 +404,8 @@ async def generate_financial_deck(
         "page source packets. Preserve their exact page order, titles, claims, and values. "
         "Use every verified chart/table on its bound slide. Change presentation design only; "
         "choose each asset's size and placement according to its aspect ratio, information density, and relationship to other page content. "
-        "Multiple visuals may be arranged side by side when that improves readability or comparison. "
-        "Preserve asset aspect ratios and keep labels legible; do not force assets into a full-width or stacked layout. "
+        "Do not embed explanatory conclusions, long titles, or analytical paragraphs inside chart canvases; place them as separate slide text for the Designer to arrange. Charts should retain only short titles, axes, legends, and data labels needed to understand the data. "
+        "When two visual assets share the same page region, choose their arrangement according to the shape of that region. If they occupy a wide lower region, arrange them side by side. If they occupy a tall left or right region, arrange them vertically. Preserve aspect ratios and label legibility. If the allocated containers do not match the assets' aspect ratios, redesign the page composition instead of stretching or shrinking the assets. "
         "do not add, remove, recalculate, redraw, or reinterpret financial evidence."
     )
     design_instruction = design_instruction + "\n\n" + _financial_design_guidance(page_roles)
