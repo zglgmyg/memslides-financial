@@ -1,468 +1,322 @@
-<h1 align="center">
-  MemSlides: A Hierarchical Memory-Driven Agent Framework for Personalized Slide Generation with Multi-turn Local Revision
-</h1>
+# MemSlides Financial：财务研报一键生成 PPT
+
+将券商研报的 Markdown 或 PDF 转换为结构化、可审计的 PowerPoint。项目在
+MemSlides 的生成与局部修订能力之上，增加了财务研报解析、证据约束、原始图表复用、
+引用核验、上海交通大学视觉规范和逐页演讲者备注。
 
 <p align="center">
-  <strong>Personalized presentation agents with user profile memory, working memory, tool memory, and scoped slide-local revision.</strong>
-</p>
-
-<p align="center">
-  <a href="https://arxiv.org/abs/2606.17162"><img alt="Paper" src="assets/badges/paper.svg"></a>
-  <a href="https://memslides.github.io/"><img alt="Project Page" src="assets/badges/project-page.svg"></a>
-  <a href="#demo-video"><img alt="Demo Video" src="assets/badges/demo-video.svg"></a>
-  <a href="https://hub.docker.com/r/huohua325/memslides"><img alt="Docker Hub" src="assets/badges/docker-hub.svg"></a>
-  <a href="https://memslides.com/"><img alt="Website" src="assets/badges/website.svg"></a>
-</p>
-
-<p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white">
+  <img alt="Python" src="https://img.shields.io/badge/python-%3E%3D3.10-3776AB?logo=python&logoColor=white">
   <img alt="Node" src="https://img.shields.io/badge/node-20-339933?logo=node.js&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-116%20passed-brightgreen">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-green">
 </p>
 
-<p align="center">
-  &#11088; <strong>If MemSlides is useful for your research or slide-generation workflow, please consider starring this repository to help others discover it.</strong>
-</p>
+## 项目定位
 
-## News
+这个分支的核心入口是：
 
-<!-- NEWS:START -->
-<!-- Add new milestones as the first table row. Keep dates in YYYY-MM-DD format. -->
-<table>
-  <tr>
-    <td width="150" align="center">
-      <strong>2026-07-15</strong><br>
-      <sub>Product milestone</sub>
-    </td>
-    <td>
-      <strong>&#128640; The MemSlides demo website crossed 200 registered users.</strong><br>
-      Thank you for supporting the MemSlides community. Feedback is always welcome:
-      <a href="https://github.com/huohua325/Memslides/issues">open an issue</a>
-      or send us feedback through the demo website.
-    </td>
-  </tr>
-  <tr>
-    <td width="150" align="center">
-      <strong>2026-07-03</strong><br>
-      <sub>Product milestone</sub>
-    </td>
-    <td>
-      <strong>&#128640; The MemSlides demo website crossed 100 users.</strong><br>
-      Thank you for supporting the MemSlides community. Feedback is always welcome:
-      <a href="https://github.com/huohua325/Memslides/issues">open an issue</a>
-      or send us feedback through the demo website.
-    </td>
-  </tr>
-  <tr>
-    <td width="150" align="center">
-      <strong>2026-06-26</strong><br>
-      <sub>Product milestone</sub>
-    </td>
-    <td>
-      <strong>&#128640; The MemSlides live demo crossed 50 verified users.</strong><br>
-      Thank you to everyone trying the demo and helping us improve the personalized slide-generation workflow:
-      <a href="https://memslides.com/">try the live demo</a>.
-    </td>
-  </tr>
-  <tr>
-    <td width="150" align="center">
-      <strong>2026-06-25</strong><br>
-      <sub>GitHub milestone</sub>
-    </td>
-    <td>
-      <strong>&#11088; MemSlides crossed 100 GitHub stars.</strong><br>
-      Thank you for helping the project reach its first community star milestone:
-      <a href="https://github.com/huohua325/Memslides/stargazers">see stargazers</a>.
-    </td>
-  </tr>
-  <tr>
-    <td width="150" align="center">
-      <strong>2026-06-24</strong><br>
-      <sub>Community milestone</sub>
-    </td>
-    <td>
-      <strong>&#127942; MemSlides reached #1 Paper of the Day on Hugging Face Daily Papers.</strong><br>
-      Thank you for the early attention from the research community. See the
-      <a href="https://huggingface.co/papers/2606.17162">#1 Paper of the day</a>,
-      and <a href="https://huggingface.co/spaces/huohua325/MemSlides">showcase Space</a>.
-    </td>
-  </tr>
-</table>
-<!-- NEWS:END -->
-
-## Demo Video
-
-https://github.com/user-attachments/assets/a92ab49e-bc5c-4e90-8c0a-0f23b08a8857
-
-## Overview
-
-MemSlides treats presentation generation as a stateful authoring process rather
-than a one-shot source-to-slides conversion task. It separates personalization
-signals by lifetime: persistent user profile memory captures recurring
-cross-job preferences, working memory carries active session constraints across
-revision rounds, and tool memory stores reusable execution experience for
-reliable localized editing.
-
-Long-term memory stores intent-conditioned user profile memory for round-0
-personalization and tool memory for reusable execution experience. Working
-memory maintains active preferences, session state, and revision constraints
-within the current deck. During revision, MemSlides projects user feedback onto
-the smallest affected slide region and applies scoped local patches instead of
-repeatedly regenerating the full deck.
-
-<p align="center">
-  <img src="assets/figures/memslides_memory_workflow.png" width="92%" alt="MemSlides hierarchical memory and localized revision overview">
-</p>
-
-## Highlights
-
-- **Intent-conditioned user profile memory** routes personalization by
-  presentation intent, then applies preferences over theme, visual style,
-  layout, template use, content strategy, and general presentation habits.
-- **Multi-turn working memory** preserves temporary preferences, session
-  constraints, and edit-state records across feedback turns in the same deck.
-- **Tool memory** retrieves prior task and tool-chain experience before similar
-  edit operations to reduce repeated execution failures.
-- **Scoped slide-local revision** updates the smallest affected slide region
-  instead of repeatedly rewriting the full deck.
-
-## Evidence
-
-<p align="center">
-  <img src="assets/figures/user_profile_preference_memory_lifecycle.png" width="45%" alt="User profile memory lifecycle">
-  <img src="assets/figures/tool_memory.png" width="45%" alt="Tool memory flow">
-</p>
-
-<p align="center">
-  <img src="assets/figures/localized_modify_example.png" width="72%" alt="Localized modify example">
-</p>
-
-- User profile memory supports persona-aware round-0 personalization by routing
-  intent-matched preferences into the current job.
-- Working memory carries active session constraints and temporary preferences
-  across multi-turn revision.
-- Tool memory stores reusable execution experience so future localized edits
-  can avoid repeated failures.
-- Scoped local revision keeps the edit surface close to the requested element,
-  reducing unintended drift in already aligned slide content.
-
-## Quick Start
-
-Install from source:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y libreoffice fontconfig fonts-noto-cjk poppler-utils
-
-conda env create -f environment.yml
-conda activate memslides
-pip install -e ".[research]"
-
-python -m playwright install chromium ffmpeg
-python -m memslides.experiment --help
+```text
+研报 Markdown / PDF
+        ↓
+文档解析与证据整理
+        ↓
+大纲、图表、数值与演讲稿生成
+        ↓
+引用核验与交大品牌处理
+        ↓
+HTML + PPTX + 运行回执
 ```
 
-Run the built-in smoke suite:
+与普通的“把全文摘要成几页幻灯片”不同，财务工作流会检查章节证据、图表来源、
+视觉预算、页面标题、引用编号、品牌元素和演讲者备注。缺少强制交付物时，流程会失败，
+不会把不完整的 PPTX 当作成功结果返回。
 
-```bash
-python -m memslides.experiment run smoke_minimal \
-  --output-base .memslides/experiments \
-  --parallel 1
-```
+## 核心能力
 
-The same experiment can run inside the Docker environment:
+- **一条命令完成全流程**：研究、大纲、可视化、引用、HTML、PPTX 和备注统一编排。
+- **研报证据约束**：页面只能使用所属章节的证据，自动修复跨章节引用。
+- **原始图表优先**：按 PDF 页面顺序复用研报图表，并限制每页最多两个视觉位置。
+- **标题去重**：章节名称与页面结论分离，避免连续页面重复同一个小标题。
+- **交大视觉规范**：封面和结尾页使用内置 16:9 背景，内容页显示完整交大 Logo。
+- **引用可追溯**：Markdown 模式核对正文引用与 PDF 附录，生成引用标记和附录页。
+- **逐页演讲稿**：生成与幻灯片对齐的 speaker manuscript，并写入 PowerPoint 备注。
+- **断点恢复**：用输入哈希和阶段状态安全执行 `--resume` 或 `--overwrite`。
+- **可审计交付**：输出运行清单、生成回执、引用验证报告和最终合规回执。
 
-```bash
-docker compose build
-docker compose run --rm memslides python -m memslides.experiment run smoke_minimal \
-  --output-base /app/.cache/memslides/experiments \
-  --parallel 1
-```
+## 快速开始
 
-`smoke_minimal` is only a small verification suite. Users can pass any local
-suite YAML path or packaged suite name to `python -m memslides.experiment run`.
+以下命令以 Windows PowerShell 为主。Linux 和 macOS 可使用等价的 Python、npm 和
+Playwright 命令。
 
-## Configuration
+### 1. 安装环境
 
-MemSlides needs user-provided model and service credentials for real generation
-experiments. Keep credentials outside git and provide them through environment
-variables, `.env`, or a private YAML file selected with `MEMSLIDES_CONFIG_FILE`
-or `--config`.
-
-The packaged public config is `src/memslides/memslides.yaml`; its placeholders
-are expanded from the current process environment when the YAML is loaded.
-Generated outputs, caches, private YAML files, and credentials must not be
-committed.
-
-This fork defaults its text and tool-calling routes to DeepSeek V4 through the
-OpenAI-compatible endpoint. Set `DEEPSEEK_API_KEY` before generation. See
-[docs/deepseek.md](docs/deepseek.md) for model routing, local embeddings, and
-the current text-only limitation.
-
-For Docker runs with a private YAML file:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.private.yml run --rm memslides \
-  python -m memslides.experiment run smoke_minimal \
-  --output-base /app/.cache/memslides/experiments \
-  --parallel 1
-```
-
-The override maps `./memslides.private.yaml` to
-`/run/secrets/memslides.private.yaml` and sets
-`MEMSLIDES_CONFIG_FILE=/run/secrets/memslides.private.yaml` inside the
-container.
-
-## Experiment CLI
-
-The suite runner is the main public entry point:
-
-```bash
-python -m memslides.experiment run smoke_minimal --output-base .memslides/experiments --parallel 1
-python -m memslides.experiment report .memslides/experiments/smoke_minimal
-python -m memslides.experiment personas
-```
-
-Core generation, revision, and template induction commands remain available for
-scripted local use:
-
-```bash
-python -m memslides generate --instruction "Create a one-slide project summary" --num-pages 1
-python -m memslides revise --workspace .memslides/session --feedback "Tighten the title"
-python -m memslides template induct --template-file template.pptx
-```
-
-## Financial Research Integration
-
-The financial path is a separate, fail-closed workflow. A complete financial
-deck must include both verified references and SJTU branding. It never accepts,
-analyzes, or applies a PowerPoint template; do not pass `--template` to the
-financial generator. Ordinary template support remains available only to the
-ordinary MemSlides generation path.
-
-The command accepts either Markdown or PDF. For Markdown input, the same-stem
-PDF must be the matching version of the report. For direct PDF input, MinerU's
-extracted Markdown supplies the citation anchors as well as the PDF appendix
-source catalog. Set `DEEPSEEK_API_KEY` and `MINERU_API_TOKEN` before running the
-workflow.
-
-### One-command financial workflow
-
-Install the project once in a virtual environment, including the research
-dependencies, and install the bundled browser used by the HTML renderer:
+需要 Python 3.10 及以上版本和 Node.js 20。
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[research]"
+npm ci
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
-Set `DEEPSEEK_API_KEY` and `MINERU_API_TOKEN`, then run the complete workflow:
+如果只是更新已有环境，可以重新执行 `pip install -e ".[research]"` 和 `npm ci`。
+
+### 2. 配置服务凭据
+
+```powershell
+$env:DEEPSEEK_API_KEY = "你的 DeepSeek API Key"
+$env:MINERU_API_TOKEN = "你的 MinerU Token"
+```
+
+不要把真实密钥写入 README、Git 提交或公共配置文件。也可以通过 `.env` 或私有 YAML
+配置；详见 [DeepSeek 配置](docs/deepseek.md)。
+
+### 3. 运行一份 human PDF 研报
 
 ```powershell
 .\.venv\Scripts\memslides.exe financial-report `
-  "data\reports\agent\report.md" `
-  --output-dir ".memslides\financial\report" `
+  "data\reports\human\000333_2025-08-31_human.pdf" `
+  --output-dir ".memslides\rerun-000333-20250831-human" `
   --max-attempts 3 `
   --generation-timeout 7200
 ```
 
-By default the command discovers `report.pdf` and, when present,
-`report_parsed.json` beside `report.md`. If parsed JSON is absent, the command
-generates it from Markdown automatically. Use `--pdf` or `--parsed-json` only
-when those files have different names. The command always enables verified citations, SJTU branding, and
-slide-aligned PowerPoint speaker notes; these features cannot be disabled.
-`--resume` continues a run whose input hashes have not changed, while
-`--overwrite` starts that output directory again. A successful run contains:
+这条命令适合直接测试 PDF 解析和 PPT 生成。当前直接 PDF 模式不会执行引用 sidecar；
+如果需要正文引用核验和引用附录，请使用下一节的 Markdown + 同名 PDF 模式。
 
-To exercise the PDF parsing path independently, pass the PDF itself as input:
+### 4. 生成带完整引用核验的 PPT
+
+Markdown 与 PDF 必须是同一份研报，并放在同一目录、使用相同文件名主干：
 
 ```powershell
 .\.venv\Scripts\memslides.exe financial-report `
-  "data\reports\agent\report.pdf" `
-  --output-dir ".memslides\financial\report-pdf" `
+  "data\reports\agent\600989_2025-10-11.md" `
+  --output-dir ".memslides\rerun-600989-20251011" `
+  --max-attempts 3 `
   --generation-timeout 7200
 ```
+
+程序会自动发现：
+
+```text
+data/reports/agent/600989_2025-10-11.md
+data/reports/agent/600989_2025-10-11.pdf
+```
+
+如果存在 `600989_2025-10-11_parsed.json`，程序会优先复用；不存在时会自动生成。
+
+## 输入模式
+
+| 输入方式 | 适用场景 | 引用处理 |
+| --- | --- | --- |
+| Markdown + 同名 PDF | 推荐的完整生产流程 | 核对正文引用、PDF 来源目录并生成引用附录 |
+| 直接 PDF | 测试 human PDF 或只有 PDF 的研报 | 当前跳过引用 sidecar，其余研究和生成阶段照常运行 |
+| Markdown + `--pdf` | Markdown 与 PDF 文件名不同 | 使用显式指定的匹配 PDF |
+| Markdown + `--parsed-json` | 已有独立的解析 JSON | 使用显式指定的块级解析结果 |
+
+Markdown 和 PDF 如果不是同一份研报，引用编号与来源目录会不一致，流程可能失败或排除
+无法验证的引用。
+
+## 常用命令参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `--output-dir` | 必填；本次运行的独立输出目录 |
+| `--max-attempts 3` | 大纲生成和修复的最大尝试次数 |
+| `--generation-timeout 7200` | Deck 生成超时秒数；长研报建议使用 7200 |
+| `--max-tokens N` | 初始输出 token 预算；确认截断后程序也会自动提高预算 |
+| `--resume` | 输入未变化时，从现有 `run_manifest.json` 继续 |
+| `--overwrite` | 清理该输出目录的阶段产物并重新运行 |
+| `--instruction "..."` | 给本次 PPT 增加额外生成要求 |
+| `--model` | 覆盖研究阶段使用的模型 |
+| `--api-provider` | 指定 `deepseek`、`siliconflow` 或自动判断 |
+| `--citation-model` | 覆盖引用匹配模型 |
+
+`--resume` 与 `--overwrite` 不能同时使用。
+
+## 输出目录
+
+一次成功运行通常包含：
 
 ```text
 <output-dir>/
-  research/          audited outline, visuals, numeric audit, speaker manuscript
-  citations/         source catalog, citation units, validation report
-  deck/              final HTML, PPTX, branding and generation receipts
-  run_manifest.json  resumable per-stage state and input hashes
-  final_receipt.json mandatory-feature compliance result
+├─ research/
+│  ├─ slide_outline.json
+│  ├─ numeric_audit.json
+│  ├─ speaker_manuscript.json
+│  └─ visualizations/
+├─ citations/
+│  ├─ citation_source_catalog.json
+│  ├─ citation_units.json
+│  └─ citation_validation_report.json
+├─ deck/
+│  ├─ outputs/                  # 最终 HTML 页面
+│  ├─ generation_receipt.json
+│  └─ *.pptx                    # 最终 PowerPoint
+├─ run_manifest.json            # 各阶段状态与输入哈希
+└─ final_receipt.json           # 最终合规检查
 ```
 
-The command fails closed when citation inputs are missing, no cited ID can be
-verified, branding is incomplete, speaker notes are not embedded, or the PPTX
-is missing. Individual IDs absent from the PDF appendix are excluded and listed
-in the receipts while the remaining verified references continue. For a long
-report, increase `--max-tokens` and `--max-attempts`.
+直接 PDF 模式会跳过引用阶段，因此 `citations/` 中不一定存在完整引用产物。最终 PPTX 的
+实际路径也会打印在命令成功返回的 JSON 中。
 
-### Legacy stage-by-stage financial workflow on PowerShell
+## 质量与合规规则
 
-Define fresh output directories and the matching inputs:
+### 大纲和证据
+
+- 内容页必须绑定研报章节和证据块。
+- 自动删除超出所属章节的 evidence refs 和 visual evidence。
+- 每张内容页最多使用两个视觉位置。
+- 图表页按原始 PDF 图表标题和页面顺序处理。
+- 页面顺序会恢复为原始 DocumentBundle 的章节顺序。
+
+### 页面设计
+
+- 封面不提前展示“总营收”“净利润”等正文指标。
+- 封面和结尾页只保留一套交大背景，自动移除冲突背景。
+- 蓝色封面的可见文字统一为白色。
+- 内容页右上角使用完整的上海交通大学 Logo。
+- 页面标题与最终大纲同步，同一章节内重复标题会改为该页核心结论。
+- HTML 使用高密度渲染倍率导出，减少截图进入 PPT 后的模糊问题。
+
+### 引用和备注
+
+- Markdown 模式只保留同时存在于正文解析结果和 PDF 来源目录中的引用 ID。
+- 缺失 ID 会记录在验证报告和最终回执中，不会由模型虚构。
+- 引用编号按照 PDF 附录顺序全局编号。
+- 演讲稿必须与页面对齐并成功写入 PowerPoint speaker notes。
+
+## 恢复或重新运行
+
+上次运行因 API、网络或 Deck 生成中断时：
 
 ```powershell
-$Python = ".\.venv\Scripts\python.exe"
-$Markdown = "D:\path\to\report.md"
-$Pdf = "D:\path\to\report.pdf"
-$ParsedJson = "D:\path\to\report_parsed.json"
-$ResearchRun = ".memslides\research-runs\report-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-$DeckRun = ".memslides\runs\report-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-$Artifacts = "D:\path\to\report_citations"
+.\.venv\Scripts\memslides.exe financial-report `
+  "data\reports\human\000333_2025-08-31_human.pdf" `
+  --output-dir ".memslides\rerun-000333-20250831-human" `
+  --resume `
+  --generation-timeout 7200
 ```
 
-Generate the audited outline, visualizations, and numeric audit from Markdown:
+如果代码或输入文件已经变化，重新生成：
 
 ```powershell
-& $Python -m memslides.research_pipeline.research_run `
-  $Markdown `
-  --output-dir $ResearchRun `
-  --candidate-mode active `
+.\.venv\Scripts\memslides.exe financial-report `
+  "data\reports\human\000333_2025-08-31_human.pdf" `
+  --output-dir ".memslides\rerun-000333-20250831-human" `
+  --overwrite `
   --max-attempts 3 `
-  --timeout 600
+  --generation-timeout 7200
 ```
 
-Parse the matching PDF appendix, build citation units, and validate Markdown
-citations against PDF sources:
+建议每份研报使用独立输出目录，避免不同输入共用运行清单。
+
+## 测试研报
+
+仓库中的样例分为两类：
+
+```text
+data/reports/agent/    # Markdown、PDF 和部分 parsed JSON 配套数据
+data/reports/human/    # 人工版本 PDF，以及部分 Markdown 配套数据
+```
+
+当前样例覆盖 000333、001309、002444、002544、002821、600989 和 603993，可用于验证
+PDF 解析、Markdown 引用、长研报、原始图表和不同页面结构。
+
+## 常见问题
+
+### `Output already contains a run`
+
+输出目录已经存在。希望继续时使用 `--resume`；希望重新生成时使用 `--overwrite`。
+
+### `Inputs changed since the saved run`
+
+输入文件的哈希与运行清单不同，不能安全续跑。确认输出目录无误后使用 `--overwrite`。
+
+### `Generated outline failed validation`
+
+程序会优先自动修复跨章节证据、重复标题和视觉预算。仍然失败时，可提高
+`--max-attempts`，检查模型输出是否被截断，并在长研报上设置更高的 `--max-tokens`。
+
+### 模型或生成阶段超时
+
+长研报建议使用：
+
+```text
+--max-attempts 3 --generation-timeout 7200
+```
+
+中断后优先尝试 `--resume`，避免重复已经完成的研究阶段。
+
+### `fitz API is deprecated` 警告
+
+这是 PyMuPDF 的兼容性警告，不是本次生成失败的直接原因。真正的失败原因通常出现在后续
+`ERROR:` 行。
+
+### 最终 PPT 在哪里
+
+查看命令最后输出的 JSON，或者在 `<output-dir>/deck/` 中查找 `.pptx`。不要到
+`.memslides` 根目录混合查找不同运行的结果。
+
+## 运行测试
 
 ```powershell
-& $Python -c "from memslides.integrations.research_report.citation_appendix import parse_pdf_citation_appendix; print(parse_pdf_citation_appendix(r'''$Pdf''', r'''$Artifacts'''))"
-
-$SourceCatalog = Join-Path $Artifacts "citation_source_catalog.json"
-$CitationUnits = Join-Path $Artifacts "citation_units.json"
-$ValidationReport = Join-Path $Artifacts "citation_validation_report.json"
-
-& $Python -c "from memslides.integrations.research_report.citation_units import write_citation_units; print(write_citation_units(r'''$ParsedJson''', r'''$CitationUnits'''))"
-& $Python -c "from memslides.integrations.research_report.citation_validation import write_citation_validation_report; print(write_citation_validation_report(r'''$CitationUnits''', r'''$SourceCatalog''', r'''$ValidationReport'''))"
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Review `citation_validation_report.json` before continuing. IDs in
-`source_missing` are excluded from later citation matching.
+当前基线为：
 
-Generate the financial HTML and baseline PPTX with mandatory SJTU branding.
-The financial generator deliberately has no `--template` argument:
+```text
+116 passed
+```
+
+测试覆盖一键工作流、引用标准化、网络重试、章节证据、图表配对、交大品牌、标题同步、
+封面处理和 PowerPoint speaker notes。
+
+## 高级与旧版用法
+
+正常使用应优先选择 `memslides financial-report`。需要单独调试某个阶段时，请参考：
+
+- [财务集成与阶段产物契约](docs/financial-integration.md)
+- [安装说明](docs/INSTALL.md)
+- [DeepSeek 模型与配置](docs/deepseek.md)
+
+底层通用 MemSlides 命令仍然保留：
 
 ```powershell
-$Outline = Join-Path $ResearchRun "slide_outline.json"
-$VisualizationManifest = Join-Path $ResearchRun "visualizations\visualization_manifest.json"
-$NumericAudit = Join-Path $ResearchRun "numeric_audit.json"
+.\.venv\Scripts\python.exe -m memslides generate `
+  --instruction "Create a one-slide project summary" `
+  --num-pages 1
 
-& $Python -m memslides.integrations.research_report.generate `
-  --outline $Outline `
-  --visualization-manifest $VisualizationManifest `
-  --numeric-audit $NumericAudit `
-  --output-dir $DeckRun `
-  --generation-timeout 7200 `
-  --sjtu-branding
+.\.venv\Scripts\python.exe -m memslides revise `
+  --workspace ".memslides\session" `
+  --feedback "Tighten the title"
+
+.\.venv\Scripts\python.exe -m memslides template induct `
+  --template-file "template.pptx"
 ```
 
-Run the required reference sidecar against the generated HTML:
+财务研报命令使用项目内置的交大视觉资源，不接受外部 `--template` 参数；通用生成路径仍可
+使用模板相关功能。
 
-```powershell
-$HtmlDir = Join-Path $DeckRun "outputs"
+## 配置、安全与隐私
 
-& $Python -m memslides.integrations.research_report.citation_sidecar `
-  --html-dir $HtmlDir `
-  --outline $Outline `
-  --citation-units $CitationUnits `
-  --validation-report $ValidationReport `
-  --source-catalog $SourceCatalog
-```
+- 真实 API Key 只放在环境变量、`.env` 或私有 YAML 中。
+- 不要提交 `.env`、`.memslides/`、`.venv/`、生成工作区或私人配置。
+- 公共默认配置位于 `src/memslides/memslides.yaml`。
+- 可以通过 `MEMSLIDES_CONFIG_FILE` 或全局 `--config` 指定私人 YAML。
+- 外部 URL、下载资源和生成的财务结论应在正式展示前人工复核。
 
-The sidecar modifies HTML and appends the PDF-ordered reference appendix; it
-does not create a PPTX. Export the modified HTML again to produce the final
-referenced and SJTU-branded deck:
+## 项目基础与致谢
 
-```powershell
-$OutputPptx = Join-Path $DeckRun "financial-report-referenced-sjtu.pptx"
+本项目基于 MemSlides：一个面向个性化演示文稿生成、多轮工作记忆、工具记忆和局部修订的
+智能体框架。
 
-& $Python -c "import asyncio; from pathlib import Path; from memslides.utils.webview import convert_html_to_pptx; asyncio.run(convert_html_to_pptx(Path(r'''$HtmlDir'''), Path(r'''$OutputPptx'''), '16:9'))"
-```
+- [原始论文](https://arxiv.org/abs/2606.17162)
+- [原始项目主页](https://memslides.github.io/)
+- [MemSlides 网站](https://memslides.com/)
 
-The final deliverable is `$OutputPptx`. See
-[docs/financial-integration.md](docs/financial-integration.md) for the audited
-artifact contracts.
-
-### SJTU HTML branding details
-
-The required `--sjtu-branding` stage applies the packaged 16:9 SJTU visual
-template artwork to outline `title` and `closing` pages and inserts the complete
-SJTU logo in the upper-right corner of every content page. It does not recolor
-content pages. The built-in financial path uses these packaged SJTU assets; it
-does not analyze an external PowerPoint template.
-
-The branding step inserts the background as a full-slide image in the HTML; it
-does not modify a native PowerPoint master or run after PPTX generation. The
-standalone citation sidecar described below also does not invoke branding.
-
-### Reference sidecar details
-
-The required financial citation stage is an additive sidecar that runs after DeckDesigner
-has produced the final slide HTML. It does not change the outline prompt,
-`slide_outline.json`, content generation, or the normal HTML-to-PPTX exporter.
-It expects three precomputed citation artifacts:
-
-- `citation_source_catalog.json`, parsed from the matching PDF appendix with
-  MinerU in the appendix's original source order;
-- `citation_units.json`, built from citation markers in the parsed Markdown JSON;
-- `citation_validation_report.json`, which retains only citation IDs present in
-  both the Markdown-derived units and the PDF source catalog.
-
-For each slide, `evidence_refs` limits candidate citation units to the referenced
-blocks. The sidecar extracts visible claim nodes from the final HTML and asks
-DeepSeek only to map claim IDs to candidate unit IDs. It then resolves the unit
-IDs to source IDs deterministically. DeepSeek cannot create block IDs, citation
-IDs, dates, domains, URLs, or source numbers.
-
-Web-source descriptions are normalized once and cached next to the source
-catalog as `citation_reference_catalog.json`. DeepSeek may extract an explicit
-title or produce a grounded descriptive title such as `相关报道`; publisher and
-document-number fields must still occur verbatim in the PDF description. Dates
-and domains remain deterministic, and the code never constructs a URL from a
-domain. Non-web sources continue to use deterministic formatting.
-
-Run the sidecar against an existing final HTML directory:
-
-```bash
-python -m memslides.integrations.research_report.citation_sidecar \
-  --html-dir /path/to/deck/outputs \
-  --outline /path/to/slide_outline.json \
-  --citation-units /path/to/citation_units.json \
-  --validation-report /path/to/citation_validation_report.json \
-  --source-catalog /path/to/citation_source_catalog.json
-```
-
-The command requires `DEEPSEEK_API_KEY` and modifies the HTML files in place.
-It removes prior sidecar marks and appendix pages before rebuilding them, so the
-same HTML directory can be processed again. Source normalization is cached, but
-claim-to-unit matching is currently performed sequentially on every run and may
-take several minutes without intermediate console progress.
-
-Source numbers are global and follow the PDF appendix order. Body pages contain
-gray-black bracketed marks such as `[1]` and `[1,3]`; they do not contain a
-second source footer. All sources are listed after the existing deck in
-`附录` pages, with ten sources per page and the final page containing the
-remainder. The sidecar updates HTML only; run the normal HTML-to-PPTX export
-after it completes.
-
-The HTML marks use `<sup class="reference-mark">`, but the current structured
-PPTX exporter does not yet map that run to PowerPoint's native superscript
-property. Consequently, the exported baseline may differ from the HTML preview.
-
-## Security And Privacy
-
-- Keep API keys in environment variables, `.env`, or private YAML files.
-- Do not commit `.env`, `.memslides/`, generated workspaces, or private config
-  files.
-- Network acquisition is optional and depends on user-provided search or model
-  credentials.
-- External URLs and downloaded assets should be reviewed before presenting.
-
-## Citation
-
-If you find MemSlides useful, please cite our paper.
+如果使用了 MemSlides 的研究框架，请引用：
 
 ```bibtex
 @misc{jin2026memslides,
@@ -479,4 +333,4 @@ If you find MemSlides useful, please cite our paper.
 
 ## License
 
-See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+见 [LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
