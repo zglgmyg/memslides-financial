@@ -9,6 +9,10 @@ const { chromium } = require("playwright");
 
 const PAGE_TIMEOUT_MS = Number(process.env.MEMSLIDES_PPTX_EXPORT_TIMEOUT_MS || 120000);
 const VISUAL_MODE = normalizeVisualMode(process.env.MEMSLIDES_PPTX_EXPORT_VISUAL_MODE || "auto");
+const DEVICE_SCALE_FACTOR = Math.min(
+  4,
+  Math.max(1, Number(process.env.MEMSLIDES_PPTX_EXPORT_DEVICE_SCALE_FACTOR || 2) || 2),
+);
 
 const LAYOUT_SPECS = {
   "16:9": { widthPx: 1280, heightPx: 720, widthIn: 13.333, heightIn: 7.5, pptx: "LAYOUT_WIDE" },
@@ -210,7 +214,10 @@ async function extractSlideDom(browser, htmlFile, layoutName = "16:9") {
   const spec = layoutSpec(layoutName);
   const page = await browser.newPage({
     viewport: { width: spec.widthPx, height: spec.heightPx },
-    deviceScaleFactor: 1,
+    // Complex CSS regions, canvas nodes, and raster-safe SVG/table fallbacks
+    // are captured as local PNGs. 2x keeps those images crisp when PowerPoint
+    // displays a 1280x720 CSS canvas across a 13.333-inch slide.
+    deviceScaleFactor: DEVICE_SCALE_FACTOR,
   });
 
   try {

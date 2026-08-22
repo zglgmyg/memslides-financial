@@ -135,7 +135,8 @@ def preflight_visualizations(
         requested = {
             str(candidate.get("type"))
             for candidate in slide.get("visual_candidates", [])
-            if isinstance(candidate, Mapping) and candidate.get("type") in {"chart", "table"}
+            if isinstance(candidate, Mapping)
+            and candidate.get("type") in {"chart", "table", "image"}
         }
         if slide.get("slide_type") == "figure_page":
             requested.add("image")

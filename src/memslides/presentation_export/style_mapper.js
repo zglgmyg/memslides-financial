@@ -199,7 +199,7 @@ function normalizeTextAlign(value) {
 function normalizeVerticalAlign(value) {
   const text = String(value || "").toLowerCase();
   if (text === "middle" || text === "center") {
-    return "mid";
+    return "middle";
   }
   if (text === "bottom") {
     return "bottom";

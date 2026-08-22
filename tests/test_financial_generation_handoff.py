@@ -17,6 +17,7 @@ from memslides.integrations.research_report.generate import (
     generate_financial_deck,
     _outline_page_roles,
     _parser,
+    _repair_duplicate_visible_text,
     _snapshot,
     _validate_slide_html_dir,
 )
@@ -225,6 +226,17 @@ def test_outline_page_roles_rejects_section(tmp_path: Path) -> None:
         _outline_page_roles(outline, 4)
 
 
+def test_outline_page_roles_rejects_missing_terminal_closing(tmp_path: Path) -> None:
+    outline = tmp_path / "slide_outline.json"
+    _dump(
+        outline,
+        {"slides": [{"page_role": "title"}, {"page_role": "content"}]},
+    )
+
+    with pytest.raises(FinancialGenerationError, match="exactly one closing"):
+        _outline_page_roles(outline, 2)
+
+
 def test_financial_html_contract_accepts_marked_content_title_bar(tmp_path: Path) -> None:
     (tmp_path / "slide_01.html").write_text(
         '<html><body data-page-role="title" data-slide-id="slide_01" style="background:#F8FAFC">Cover</body></html>',
@@ -295,6 +307,33 @@ def test_financial_html_validation_rejects_duplicate_substantial_text(tmp_path: 
 
     with pytest.raises(FinancialGenerationError, match="duplicate visible text"):
         _validate_slide_html_dir(tmp_path, 1, page_roles=["title"])
+
+
+def test_duplicate_text_repair_removes_only_later_plain_text_leaf(tmp_path: Path) -> None:
+    path = tmp_path / "slide_01.html"
+    repeated = "煤制烯烃成本优势显著，盈利能力具备韧性"
+    path.write_text(
+        f"<html><body><h1>{repeated}</h1><div>{repeated}</div><p>保留不同的正文内容用于测试</p></body></html>",
+        encoding="utf-8",
+    )
+
+    assert _repair_duplicate_visible_text(path) == [repeated]
+    repaired = path.read_text(encoding="utf-8")
+    assert repaired.count(repeated) == 1
+    assert "保留不同的正文内容用于测试" in repaired
+
+
+def test_duplicate_text_repair_handles_nested_text_nodes(tmp_path: Path) -> None:
+    path = tmp_path / "slide_01.html"
+    repeated = "2025至2027年盈利预测保持增长"
+    path.write_text(
+        f"<html><body><div><span>{repeated}</span></div>"
+        f"<section><strong>{repeated}</strong></section></body></html>",
+        encoding="utf-8",
+    )
+
+    assert _repair_duplicate_visible_text(path) == [repeated]
+    assert path.read_text(encoding="utf-8").count(repeated) == 1
 
 
 def test_financial_html_contract_rejects_slide_identity_mismatch(tmp_path: Path) -> None:

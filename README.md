@@ -240,12 +240,66 @@ analyzes, or applies a PowerPoint template; do not pass `--template` to the
 financial generator. Ordinary template support remains available only to the
 ordinary MemSlides generation path.
 
-The Markdown report and PDF must be two versions of the same report. The parsed
-Markdown JSON supplies block-level citation anchors, while MinerU extracts the
-source catalog from the matching PDF appendix. Set `DEEPSEEK_API_KEY` and
-`MINERU_API_TOKEN` before running the workflow.
+The command accepts either Markdown or PDF. For Markdown input, the same-stem
+PDF must be the matching version of the report. For direct PDF input, MinerU's
+extracted Markdown supplies the citation anchors as well as the PDF appendix
+source catalog. Set `DEEPSEEK_API_KEY` and `MINERU_API_TOKEN` before running the
+workflow.
 
-### Complete financial workflow on PowerShell
+### One-command financial workflow
+
+Install the project once in a virtual environment, including the research
+dependencies, and install the bundled browser used by the HTML renderer:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[research]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+Set `DEEPSEEK_API_KEY` and `MINERU_API_TOKEN`, then run the complete workflow:
+
+```powershell
+.\.venv\Scripts\memslides.exe financial-report `
+  "data\reports\agent\report.md" `
+  --output-dir ".memslides\financial\report" `
+  --max-attempts 3 `
+  --generation-timeout 7200
+```
+
+By default the command discovers `report.pdf` and, when present,
+`report_parsed.json` beside `report.md`. If parsed JSON is absent, the command
+generates it from Markdown automatically. Use `--pdf` or `--parsed-json` only
+when those files have different names. The command always enables verified citations, SJTU branding, and
+slide-aligned PowerPoint speaker notes; these features cannot be disabled.
+`--resume` continues a run whose input hashes have not changed, while
+`--overwrite` starts that output directory again. A successful run contains:
+
+To exercise the PDF parsing path independently, pass the PDF itself as input:
+
+```powershell
+.\.venv\Scripts\memslides.exe financial-report `
+  "data\reports\agent\report.pdf" `
+  --output-dir ".memslides\financial\report-pdf" `
+  --generation-timeout 7200
+```
+
+```text
+<output-dir>/
+  research/          audited outline, visuals, numeric audit, speaker manuscript
+  citations/         source catalog, citation units, validation report
+  deck/              final HTML, PPTX, branding and generation receipts
+  run_manifest.json  resumable per-stage state and input hashes
+  final_receipt.json mandatory-feature compliance result
+```
+
+The command fails closed when citation inputs are missing, no cited ID can be
+verified, branding is incomplete, speaker notes are not embedded, or the PPTX
+is missing. Individual IDs absent from the PDF appendix are excluded and listed
+in the receipts while the remaining verified references continue. For a long
+report, increase `--max-tokens` and `--max-attempts`.
+
+### Legacy stage-by-stage financial workflow on PowerShell
 
 Define fresh output directories and the matching inputs:
 
@@ -333,10 +387,11 @@ artifact contracts.
 
 ### SJTU HTML branding details
 
-The required `--sjtu-branding` stage inserts the packaged complete SJTU logo in
-the upper-right corner of every content page. It replaces the background of
-outline `title` and `closing` pages with the packaged 16:9 SJTU artwork. It does
-not recolor content pages and does not analyze a PowerPoint template.
+The required `--sjtu-branding` stage applies the packaged 16:9 SJTU visual
+template artwork to outline `title` and `closing` pages and inserts the complete
+SJTU logo in the upper-right corner of every content page. It does not recolor
+content pages. The built-in financial path uses these packaged SJTU assets; it
+does not analyze an external PowerPoint template.
 
 The branding step inserts the background as a full-slide image in the HTML; it
 does not modify a native PowerPoint master or run after PPTX generation. The

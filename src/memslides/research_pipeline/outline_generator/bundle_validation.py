@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
@@ -38,6 +39,77 @@ def _first_topic_sentence(value: object) -> str | None:
     # Enforce verbatim preservation only for a concise, presentation-ready lead.
     normalized_sentence = _normalized_text(sentence)
     return sentence if 6 <= len(normalized_sentence) <= 120 else None
+
+
+def _concise_takeaway_title(value: object, *, maximum_chars: int = 42) -> str:
+    """Create a short, source-faithful display title from a key message."""
+
+    text = _SPACE_RE.sub(" ", _CITATION_RE.sub("", str(value or ""))).strip()
+    text = _LEADING_LIST_MARKER_RE.sub("", text).strip()
+    if not text:
+        return ""
+    sentence = re.split(r"[。！？；;]", text, maxsplit=1)[0].strip(" ，,")
+    if len(_normalized_text(sentence)) <= maximum_chars:
+        return sentence
+
+    clauses = [
+        clause.strip()
+        for clause in re.split(r"[，,]", sentence)
+        if clause.strip()
+    ]
+    if len(clauses) > 1 and len(_normalized_text(clauses[0])) <= 8:
+        clauses = clauses[1:]
+    selected: list[str] = []
+    for clause in clauses:
+        candidate = "，".join([*selected, clause])
+        if selected and len(_normalized_text(candidate)) > maximum_chars:
+            break
+        selected.append(clause)
+        if len(_normalized_text(candidate)) >= maximum_chars:
+            break
+    result = "，".join(selected).strip()
+    if result and len(_normalized_text(result)) <= maximum_chars:
+        return result
+    compact = sentence.strip()
+    return compact[: maximum_chars - 1].rstrip(" ，,") + "…"
+
+
+def normalize_repeated_content_titles(outline: Mapping[str, Any]) -> int:
+    """Keep section labels verbatim while making repeated slide titles distinct.
+
+    The first content slide in a source section may retain the source heading.
+    Later slides that repeat that title use their grounded key message as the
+    audience-facing takeaway title. Summary and figure pages keep their
+    application-owned titles.
+    """
+
+    slides = outline.get("slides", [])
+    if not isinstance(slides, list):
+        return 0
+    seen_by_section: dict[str, set[str]] = defaultdict(set)
+    changes = 0
+    for slide in slides:
+        if (
+            not isinstance(slide, dict)
+            or slide.get("page_role") != "content"
+            or slide.get("slide_type") in {"summary", "figure_page"}
+        ):
+            continue
+        section_ref = str(slide.get("section_ref") or "")
+        title_key = _normalized_text(slide.get("title"))
+        seen = seen_by_section[section_ref]
+        if title_key and title_key not in seen:
+            seen.add(title_key)
+            continue
+        replacement = _concise_takeaway_title(slide.get("key_message"))
+        replacement_key = _normalized_text(replacement)
+        if replacement_key and replacement_key not in seen:
+            slide["title"] = replacement
+            seen.add(replacement_key)
+            changes += 1
+        elif title_key:
+            seen.add(title_key)
+    return changes
 
 
 def normalize_topic_sentence_key_messages(
@@ -122,6 +194,9 @@ def canonicalize_outline_from_bundle(
         "evidence_refs": 0,
         "null_fields": 0,
         "figure_pages_removed": 0,
+        "figure_titles": 0,
+        "figure_sections": 0,
+        "figure_order": 0,
     }
     slides = outline.get("slides", [])
     if not isinstance(slides, list):
@@ -154,9 +229,56 @@ def canonicalize_outline_from_bundle(
         retained_slides.append(slide)
     slides[:] = retained_slides
 
+    figure_inventory = build_figure_inventory(snapshot)
+    figures_by_id = {
+        str(item["figure_id"]): item for item in figure_inventory
+    }
+    figure_slots: list[int] = []
+    figure_slides: list[dict[str, Any]] = []
+    figure_id_by_object: dict[int, str] = {}
+    for index, slide in enumerate(slides):
+        if isinstance(slide, dict) and slide.get("slide_type") == "figure_page":
+            refs = slide.get("evidence_refs", [])
+            figure_ids = [
+                str(ref.get("id") or "")
+                for ref in refs
+                if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+            ] if isinstance(refs, list) else []
+            if len(figure_ids) == 1 and figure_ids[0] in figures_by_id:
+                figure_slots.append(index)
+                figure_slides.append(slide)
+                figure_id_by_object[id(slide)] = figure_ids[0]
+    ordered_figure_slides = sorted(
+        figure_slides,
+        key=lambda slide: int(figures_by_id[figure_id_by_object[id(slide)]]["order"]),
+    )
+    counts["figure_order"] = sum(
+        before is not after
+        for before, after in zip(figure_slides, ordered_figure_slides)
+    )
+    for index, slide in zip(figure_slots, ordered_figure_slides):
+        slides[index] = slide
+
     for slide in slides:
         if not isinstance(slide, dict):
             continue
+        if slide.get("slide_type") == "figure_page":
+            refs = slide.get("evidence_refs", [])
+            figure_ids = [
+                str(ref.get("id") or "")
+                for ref in refs
+                if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+            ] if isinstance(refs, list) else []
+            item = figures_by_id.get(figure_ids[0]) if len(figure_ids) == 1 else None
+            if item is not None:
+                caption = str(item.get("caption") or "").strip()
+                if caption and str(slide.get("title") or "").strip() != caption:
+                    slide["title"] = caption
+                    counts["figure_titles"] += 1
+                section_id = item.get("section_id")
+                if section_id and str(slide.get("section_ref") or "") != str(section_id):
+                    slide["section_ref"] = str(section_id)
+                    counts["figure_sections"] += 1
         section_id = str(slide.get("section_ref") or "")
         section = snapshot.sections_by_id.get(section_id)
         if section is None:
@@ -168,15 +290,6 @@ def canonicalize_outline_from_bundle(
         if canonical_title and str(slide.get("section") or "").strip() != canonical_title:
             slide["section"] = canonical_title
             counts["labels"] += 1
-        if (
-            canonical_title
-            and slide.get("page_role") == "content"
-            and slide.get("slide_type") != "figure_page"
-            and str(slide.get("title") or "").strip() != canonical_title
-        ):
-            slide["title"] = canonical_title
-            counts["titles"] += 1
-
         if slide.get("page_role") != "content" or slide.get("slide_type") == "figure_page":
             continue
         refs = slide.get("evidence_refs")
@@ -245,6 +358,334 @@ def canonicalize_outline_from_bundle(
     return counts
 
 
+def _semantic_terms(value: object) -> set[str]:
+    """Return lightweight Chinese/Latin terms for deterministic figure matching."""
+
+    normalized = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(value or "").casefold())
+    terms = set(re.findall(r"[a-z]+|\d+(?:\.\d+)?", normalized))
+    chinese = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
+    terms.update(
+        chinese[index : index + 2]
+        for index in range(max(0, len(chinese) - 1))
+    )
+    return terms
+
+
+def _figure_host_score(
+    slide: Mapping[str, Any], figure: Mapping[str, Any]
+) -> tuple[int, int]:
+    slide_text = " ".join(
+        [
+            str(slide.get("title") or ""),
+            str(slide.get("key_message") or ""),
+            *(str(value) for value in slide.get("bullet_points", [])),
+        ]
+    )
+    figure_text = " ".join(
+        [
+            str(figure.get("caption") or ""),
+            *(
+                str(item.get("text") or "")
+                for item in figure.get("nearby_blocks", [])
+                if isinstance(item, Mapping)
+            ),
+        ]
+    )
+    slide_block_ids = {
+        str(ref.get("id") or "")
+        for ref in slide.get("evidence_refs", [])
+        if isinstance(ref, Mapping) and ref.get("kind") == "block"
+    }
+    nearby_block_ids = {
+        str(item.get("block_id") or "")
+        for item in figure.get("nearby_blocks", [])
+        if isinstance(item, Mapping)
+    }
+    direct = 1 if slide_block_ids & nearby_block_ids else 0
+    overlap = len(_semantic_terms(slide_text) & _semantic_terms(figure_text))
+    return direct, overlap
+
+
+def compact_figure_pages_into_content_slides(
+    outline: Mapping[str, Any],
+    snapshot: DocumentIntelligenceSnapshot,
+    *,
+    maximum_figures_per_slide: int = 2,
+    maximum_standalone_ratio: float = 0.4,
+) -> dict[str, int]:
+    """Compress model-selected PDF figure pages without another model call.
+
+    Original figures are assigned only to non-figure content slides in the same
+    source section. A slide receives at most two images. Any remaining
+    standalone pages are capped relative to the narrative content page count;
+    overflow figures are omitted instead of expanding the deck unboundedly.
+    """
+
+    counts = {
+        "embedded_figures": 0,
+        "paired_slides": 0,
+        "standalone_retained": 0,
+        "figure_pages_omitted": 0,
+    }
+    slides = outline.get("slides", [])
+    if not isinstance(slides, list) or maximum_figures_per_slide < 1:
+        return counts
+
+    inventory = build_figure_inventory(snapshot)
+    figures_by_id = {
+        str(item.get("figure_id") or ""): item
+        for item in inventory
+        if item.get("selectable") is True
+    }
+    order_by_id = {
+        identity: int(item.get("order") or 0)
+        for identity, item in figures_by_id.items()
+    }
+    figure_page_records: list[tuple[dict[str, Any], str]] = []
+    hosts_by_section: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    used_candidate_ids = {
+        str(candidate.get("candidate_id") or "")
+        for slide in slides
+        if isinstance(slide, Mapping)
+        for candidate in slide.get("visual_candidates", [])
+        if isinstance(candidate, Mapping) and candidate.get("candidate_id")
+    }
+
+    for slide in slides:
+        if not isinstance(slide, dict) or slide.get("page_role") != "content":
+            continue
+        refs = slide.get("evidence_refs", [])
+        figure_ids = [
+            str(ref.get("id") or "")
+            for ref in refs
+            if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+        ] if isinstance(refs, list) else []
+        if slide.get("slide_type") == "figure_page":
+            if len(figure_ids) == 1 and figure_ids[0] in figures_by_id:
+                figure_page_records.append((slide, figure_ids[0]))
+            continue
+        non_image_candidates = [
+            candidate
+            for candidate in slide.get("visual_candidates", [])
+            if isinstance(candidate, Mapping) and candidate.get("type") != "image"
+        ]
+        figure_capacity = min(
+            maximum_figures_per_slide,
+            max(0, 2 - len(non_image_candidates)),
+        )
+        if len(figure_ids) < figure_capacity:
+            hosts_by_section[str(slide.get("section_ref") or "")].append(slide)
+
+    if not figure_page_records:
+        return counts
+
+    assigned_by_host: dict[int, list[str]] = defaultdict(list)
+    host_by_object_id: dict[int, dict[str, Any]] = {}
+    unassigned: list[tuple[dict[str, Any], str]] = []
+    for figure_slide, figure_id in sorted(
+        figure_page_records, key=lambda item: order_by_id.get(item[1], 0)
+    ):
+        section_id = str(figure_slide.get("section_ref") or "")
+        available_hosts: list[dict[str, Any]] = []
+        for host in hosts_by_section.get(section_id, []):
+            existing_count = sum(
+                1
+                for ref in host.get("evidence_refs", [])
+                if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+            )
+            non_image_count = sum(
+                1
+                for candidate in host.get("visual_candidates", [])
+                if isinstance(candidate, Mapping) and candidate.get("type") != "image"
+            )
+            figure_capacity = min(
+                maximum_figures_per_slide,
+                max(0, 2 - non_image_count),
+            )
+            if existing_count + len(assigned_by_host[id(host)]) < figure_capacity:
+                available_hosts.append(host)
+        if not available_hosts:
+            unassigned.append((figure_slide, figure_id))
+            continue
+        host = max(
+            available_hosts,
+            key=lambda item: (
+                _figure_host_score(item, figures_by_id[figure_id]),
+                -hosts_by_section[section_id].index(item),
+            ),
+        )
+        assigned_by_host[id(host)].append(figure_id)
+        host_by_object_id[id(host)] = host
+
+    for host_id, assigned_ids in assigned_by_host.items():
+        host = host_by_object_id[host_id]
+        refs = host.setdefault("evidence_refs", [])
+        existing_figure_ids = [
+            str(ref.get("id") or "")
+            for ref in refs
+            if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+        ]
+        all_figure_ids = sorted(
+            dict.fromkeys([*existing_figure_ids, *assigned_ids]),
+            key=lambda identity: order_by_id.get(identity, 0),
+        )[:maximum_figures_per_slide]
+        refs[:] = [
+            ref
+            for ref in refs
+            if not (isinstance(ref, Mapping) and ref.get("kind") == "figure")
+        ]
+        refs.extend({"kind": "figure", "id": identity} for identity in all_figure_ids)
+
+        candidates = host.setdefault("visual_candidates", [])
+        existing_image_candidate = next(
+            (
+                candidate
+                for candidate in candidates
+                if isinstance(candidate, dict) and candidate.get("type") == "image"
+            ),
+            None,
+        )
+        candidates[:] = [
+            candidate
+            for candidate in candidates
+            if not (isinstance(candidate, Mapping) and candidate.get("type") == "image")
+        ]
+        candidate_id = str(
+            (existing_image_candidate or {}).get("candidate_id") or ""
+        )
+        if not candidate_id:
+            base_id = "visual_image_" + re.sub(
+                r"[^A-Za-z0-9_.-]+", "_", str(host.get("slide_id") or "slide")
+            )
+            candidate_id = base_id
+            suffix = 2
+            while candidate_id in used_candidate_ids:
+                candidate_id = f"{base_id}_{suffix}"
+                suffix += 1
+        used_candidate_ids.add(candidate_id)
+        captions = [
+            str(figures_by_id[identity].get("caption") or identity)
+            for identity in all_figure_ids
+        ]
+        candidates.append(
+            {
+                "candidate_id": candidate_id,
+                "type": "image",
+                "display_mode": "paired" if len(all_figure_ids) == 2 else "embedded",
+                "description": " / ".join(captions),
+                "source_refs": list(host.get("source_refs", [])),
+                "evidence_refs": [
+                    {"kind": "figure", "id": identity}
+                    for identity in all_figure_ids
+                ],
+            }
+        )
+        counts["embedded_figures"] += len(assigned_ids)
+        if len(all_figure_ids) == 2:
+            counts["paired_slides"] += 1
+
+    narrative_content_count = sum(
+        1
+        for slide in slides
+        if isinstance(slide, Mapping)
+        and slide.get("page_role") == "content"
+        and slide.get("slide_type") != "figure_page"
+    )
+    standalone_budget = int(narrative_content_count * maximum_standalone_ratio)
+    if narrative_content_count == 0:
+        standalone_budget = 1
+    retained_unassigned: set[int] = set()
+    seen_sections: set[str] = set()
+    ranked_unassigned = sorted(
+        unassigned,
+        key=lambda item: (
+            -len(figures_by_id[item[1]].get("nearby_blocks", [])),
+            -len(str(figures_by_id[item[1]].get("caption") or "")),
+            order_by_id.get(item[1], 0),
+        ),
+    )
+    retained_per_section: dict[str, int] = defaultdict(int)
+    for figure_slide, _ in ranked_unassigned:
+        if len(retained_unassigned) >= standalone_budget:
+            break
+        section_id = str(figure_slide.get("section_ref") or "")
+        if section_id in seen_sections:
+            continue
+        retained_unassigned.add(id(figure_slide))
+        seen_sections.add(section_id)
+        retained_per_section[section_id] += 1
+    # A long source section can contain several genuinely dense figures. Fill
+    # any remaining global budget conservatively, while keeping a per-section
+    # ceiling so one figure-heavy chapter cannot dominate the deck again.
+    for figure_slide, _ in ranked_unassigned:
+        if len(retained_unassigned) >= standalone_budget:
+            break
+        if id(figure_slide) in retained_unassigned:
+            continue
+        section_id = str(figure_slide.get("section_ref") or "")
+        if retained_per_section[section_id] >= 3:
+            continue
+        retained_unassigned.add(id(figure_slide))
+        retained_per_section[section_id] += 1
+
+    assigned_slide_ids = {
+        id(figure_slide)
+        for figure_slide, figure_id in figure_page_records
+        if any(figure_id in values for values in assigned_by_host.values())
+    }
+    retained_slides: list[Any] = []
+    for slide in slides:
+        if id(slide) in assigned_slide_ids:
+            continue
+        if isinstance(slide, Mapping) and slide.get("slide_type") == "figure_page":
+            if id(slide) not in retained_unassigned:
+                counts["figure_pages_omitted"] += 1
+                continue
+            counts["standalone_retained"] += 1
+        retained_slides.append(slide)
+    slides[:] = retained_slides
+    return counts
+
+
+def canonicalize_slide_section_order(
+    outline: Mapping[str, Any], snapshot: DocumentIntelligenceSnapshot
+) -> int:
+    """Restore DocumentBundle section order without another model request.
+
+    Slide semantics and evidence stay attached to their slide. Only list order
+    and the positional slide IDs are source-owned here.
+    """
+    slides = outline.get("slides", [])
+    if not isinstance(slides, list):
+        return 0
+    section_positions = {
+        section_id: index for index, section_id in enumerate(snapshot.section_order)
+    }
+    original = list(slides)
+
+    def order_key(item: tuple[int, Any]) -> tuple[int, int]:
+        index, slide = item
+        if not isinstance(slide, Mapping):
+            return (len(section_positions) + 1, index)
+        role = slide.get("page_role")
+        if role == "title":
+            return (-1, index)
+        if role == "closing":
+            return (len(section_positions) + 2, index)
+        return (
+            section_positions.get(str(slide.get("section_ref") or ""), len(section_positions)),
+            index,
+        )
+
+    reordered = [slide for _, slide in sorted(enumerate(original), key=order_key)]
+    changes = sum(left is not right for left, right in zip(original, reordered))
+    slides[:] = reordered
+    for page_number, slide in enumerate(slides, start=1):
+        if isinstance(slide, dict):
+            slide["slide_id"] = f"slide_{page_number:03d}"
+    return changes
+
+
 def _grounded_number_issues(
     slide: Mapping[str, Any],
     *,
@@ -284,6 +725,128 @@ def _descendant_or_same(
     return candidate == ancestor or (
         candidate is not None and ancestor in snapshot.section_paths.get(candidate, ())
     )
+
+
+def normalize_section_evidence_and_visual_budget(
+    outline: Mapping[str, Any],
+    snapshot: DocumentIntelligenceSnapshot,
+) -> dict[str, int]:
+    """Remove deterministic outline residues that do not require another LLM turn.
+
+    Content slides may cite only evidence from their declared source section and
+    may consume at most two visual slots. Visual candidates are ordered by the
+    model, so the earliest candidates that fit are retained. When an image
+    candidate is removed, its figure reference is removed from the slide too so
+    figure coverage remains internally consistent.
+    """
+
+    counts = {
+        "cross_section_evidence_removed": 0,
+        "cross_section_visuals_removed": 0,
+        "over_budget_visuals_removed": 0,
+        "orphan_figure_refs_removed": 0,
+    }
+    slides = outline.get("slides", [])
+    if not isinstance(slides, list):
+        return counts
+
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        role = str(slide.get("page_role") or "")
+        slide_type = str(slide.get("slide_type") or "")
+        section_ref = str(slide.get("section_ref") or "")
+        section_known = section_ref in snapshot.sections_by_id
+
+        refs = slide.get("evidence_refs", [])
+        if isinstance(refs, list) and section_known:
+            retained_refs: list[Any] = []
+            for ref in refs:
+                if not isinstance(ref, Mapping):
+                    retained_refs.append(ref)
+                    continue
+                evidence = snapshot.evidence(
+                    str(ref.get("kind") or ""), str(ref.get("id") or "")
+                )
+                if evidence is not None and not _descendant_or_same(
+                    snapshot, evidence.section_id, section_ref
+                ):
+                    counts["cross_section_evidence_removed"] += 1
+                    continue
+                retained_refs.append(ref)
+            refs[:] = retained_refs
+
+        candidates = slide.get("visual_candidates", [])
+        if not isinstance(candidates, list):
+            continue
+
+        scoped_candidates: list[Any] = []
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping) or not section_known:
+                scoped_candidates.append(candidate)
+                continue
+            candidate_refs = candidate.get("evidence_refs", [])
+            candidate_ref_items = (
+                candidate_refs if isinstance(candidate_refs, list) else []
+            )
+            crosses_section = any(
+                evidence is not None
+                and not _descendant_or_same(
+                    snapshot, evidence.section_id, section_ref
+                )
+                for ref in candidate_ref_items
+                if isinstance(ref, Mapping)
+                for evidence in [
+                    snapshot.evidence(
+                        str(ref.get("kind") or ""), str(ref.get("id") or "")
+                    )
+                ]
+            )
+            if crosses_section:
+                counts["cross_section_visuals_removed"] += 1
+                continue
+            scoped_candidates.append(candidate)
+
+        maximum_units = 2 if role == "content" and slide_type != "figure_page" else 0
+        retained_candidates: list[Any] = []
+        used_units = 0
+        for candidate in scoped_candidates:
+            units = (
+                2
+                if isinstance(candidate, Mapping)
+                and candidate.get("type") == "image"
+                and candidate.get("display_mode") == "paired"
+                else 1
+            )
+            if used_units + units > maximum_units:
+                counts["over_budget_visuals_removed"] += 1
+                continue
+            retained_candidates.append(candidate)
+            used_units += units
+        candidates[:] = retained_candidates
+
+        if slide_type == "figure_page" or not isinstance(refs, list):
+            continue
+        retained_figure_ids = {
+            str(ref.get("id") or "")
+            for candidate in retained_candidates
+            if isinstance(candidate, Mapping) and candidate.get("type") == "image"
+            for ref in candidate.get("evidence_refs", [])
+            if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+        }
+        filtered_refs = [
+            ref
+            for ref in refs
+            if not (
+                isinstance(ref, Mapping)
+                and ref.get("kind") == "figure"
+                and str(ref.get("id") or "") not in retained_figure_ids
+            )
+        ]
+        counts["orphan_figure_refs_removed"] += len(refs) - len(filtered_refs)
+        refs[:] = filtered_refs
+
+    return counts
 
 
 def _front_matter_summary_issues(
@@ -397,21 +960,6 @@ def validate_outline_evidence(
                 declared_section = str(slide.get("section") or "").strip()
                 if declared_section and canonical_title and declared_section != canonical_title:
                     issues.append(Issue("error", "BUNDLE.SECTION_TITLE_MISMATCH", f"{base}.section", "slide section label must match the DocumentBundle heading"))
-                if (
-                    slide.get("page_role") == "content"
-                    and slide.get("slide_type") != "figure_page"
-                    and canonical_title
-                    and slide.get("title") is not None
-                    and str(slide.get("title") or "").strip() != canonical_title
-                ):
-                    issues.append(
-                        Issue(
-                            "error",
-                            "BUNDLE.SECTION_SLIDE_TITLE",
-                            f"{base}.title",
-                            "content slide title must exactly match the DocumentBundle heading",
-                        )
-                    )
 
         role = slide.get("page_role")
         refs = slide.get("evidence_refs", [])
@@ -425,14 +973,22 @@ def validate_outline_evidence(
         maximum_visuals = 2 if role == "content" else 0
         if slide_type == "figure_page":
             maximum_visuals = 0
-        if len(visual_candidates) > maximum_visuals:
+        visual_units = sum(
+            2
+            if isinstance(candidate, Mapping)
+            and candidate.get("type") == "image"
+            and candidate.get("display_mode") == "paired"
+            else 1
+            for candidate in visual_candidates
+        )
+        if visual_units > maximum_visuals:
             issues.append(
                 Issue(
                     "error",
                     "LAYOUT.VISUAL_BUDGET_EXCEEDED",
                     f"{base}.visual_candidates",
                     (
-                        f"slide has {len(visual_candidates)} visual candidates; "
+                        f"slide requires {visual_units} visual slots; "
                         f"maximum is {maximum_visuals}. Split the content across "
                         "slides or remove lower-priority visuals"
                     ),
@@ -464,12 +1020,15 @@ def validate_outline_evidence(
                 )
             else:
                 current_figure_position = figure_positions[figure_refs[0]]
-                figure = snapshot.figures_by_id[figure_refs[0]]
-                caption_block = snapshot.blocks_by_id.get(
-                    str(figure.get("caption_block_id") or ""), {}
-                )
                 canonical_caption = str(
-                    caption_block.get("text_raw") or ""
+                    next(
+                        (
+                            item.get("caption")
+                            for item in figure_inventory
+                            if str(item.get("figure_id")) == figure_refs[0]
+                        ),
+                        "",
+                    ) or ""
                 ).strip()
                 if (
                     canonical_caption
@@ -497,14 +1056,25 @@ def validate_outline_evidence(
                     previous_figure_position, current_figure_position
                 )
         elif figure_refs:
-            issues.append(
-                Issue(
-                    "error",
-                    "FIGURE.REQUIRES_FIGURE_PAGE",
-                    f"{base}.evidence_refs",
-                    "figure evidence must be migrated on a dedicated figure_page",
+            if len(figure_refs) > 2:
+                issues.append(
+                    Issue(
+                        "error",
+                        "FIGURE.CONTENT_BUDGET_EXCEEDED",
+                        f"{base}.evidence_refs",
+                        "a content slide may contain at most two original figures",
+                    )
                 )
-            )
+            for figure_id in figure_refs:
+                if figure_id not in selectable_figures:
+                    issues.append(
+                        Issue(
+                            "error",
+                            "FIGURE.ASSET_UNAVAILABLE",
+                            f"{base}.evidence_refs",
+                            f"figure {figure_id!r} has no available original asset",
+                        )
+                    )
         if role == "content" and not refs:
             issues.append(Issue("error", "BUNDLE.CONTENT_WITHOUT_EVIDENCE", f"{base}.evidence_refs", "content slide must reference DocumentBundle evidence"))
         if role == "content" and section_ref is None:
@@ -549,10 +1119,65 @@ def validate_outline_evidence(
                         "error",
                         "BUNDLE.VISUAL_WITHOUT_NATIVE_EVIDENCE",
                         f"{base}.visual_candidates[{candidate_index}].evidence_refs",
-                        "visual candidate must cite native block/table evidence",
+                        "visual candidate must cite native block/table/figure evidence",
                     )
                 )
                 continue
+            candidate_type = str(candidate.get("type") or "")
+            candidate_figure_ids = [
+                str(ref.get("id") or "")
+                for ref in candidate_refs
+                if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+            ]
+            if candidate_type == "image":
+                display_mode = str(candidate.get("display_mode") or "")
+                expected_count = 2 if display_mode == "paired" else 1
+                if (
+                    len(candidate_refs) != expected_count
+                    or len(candidate_figure_ids) != expected_count
+                ):
+                    issues.append(
+                        Issue(
+                            "error",
+                            "FIGURE.INVALID_IMAGE_CANDIDATE",
+                            f"{base}.visual_candidates[{candidate_index}].evidence_refs",
+                            (
+                                "paired image candidates require exactly two figures; "
+                                "embedded/standalone candidates require exactly one"
+                            ),
+                        )
+                    )
+                elif any(identity not in figure_refs for identity in candidate_figure_ids):
+                    issues.append(
+                        Issue(
+                            "error",
+                            "FIGURE.IMAGE_EVIDENCE_NOT_ON_SLIDE",
+                            f"{base}.visual_candidates[{candidate_index}].evidence_refs",
+                            "image candidate figure evidence must also appear on the slide",
+                        )
+                    )
+                positions = [
+                    figure_positions.get(identity, 0)
+                    for identity in candidate_figure_ids
+                ]
+                if positions != sorted(positions):
+                    issues.append(
+                        Issue(
+                            "error",
+                            "FIGURE.IMAGE_ORDER",
+                            f"{base}.visual_candidates[{candidate_index}].evidence_refs",
+                            "paired image evidence must follow PDF figure order",
+                        )
+                    )
+            elif candidate_figure_ids:
+                issues.append(
+                    Issue(
+                        "error",
+                        "FIGURE.WRONG_VISUAL_TYPE",
+                        f"{base}.visual_candidates[{candidate_index}].evidence_refs",
+                        "original figure evidence requires a type=image visual candidate",
+                    )
+                )
             for ref_index, ref in enumerate(candidate_refs):
                 if not isinstance(ref, Mapping):
                     continue
@@ -586,6 +1211,27 @@ def validate_outline_evidence(
                             f"visual evidence {identity!r} is outside section {section_ref!r}",
                         )
                     )
+
+        if slide_type != "figure_page":
+            candidate_figure_ids = {
+                str(ref.get("id") or "")
+                for candidate in visual_candidates
+                if isinstance(candidate, Mapping) and candidate.get("type") == "image"
+                for ref in candidate.get("evidence_refs", [])
+                if isinstance(ref, Mapping) and ref.get("kind") == "figure"
+            }
+            if set(figure_refs) != candidate_figure_ids:
+                issues.append(
+                    Issue(
+                        "error",
+                        "FIGURE.CONTENT_IMAGE_COVERAGE",
+                        f"{base}.visual_candidates",
+                        (
+                            "every figure on a content slide must be covered exactly "
+                            "by an image visual candidate"
+                        ),
+                    )
+                )
 
         if role == "content" and slide_type != "figure_page":
             first_paragraph = next(

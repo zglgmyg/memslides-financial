@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
+import time
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 from .citation_appendix import format_citation_source
 from .citation_matching import DEFAULT_BASE_URL, DEFAULT_MODEL
 
 
 _BATCH_SIZE = 20
+_NETWORK_ATTEMPTS = 4
 _SYSTEM_PROMPT = """你只负责从 PDF 附录的网页来源描述中抽取引用字段，不得改写、补充或猜测。
 对每条输入返回且只返回：cite_id、title、publisher、document_number。
 如果描述中存在明确标题，title 应提取该标题，并排除标题后的站点名称、栏目名称和正文摘要。
@@ -69,9 +74,59 @@ def _parse_references(
             "reference_document_number": fields["document_number"],
         }
 
-    if set(references) != set(descriptions):
-        raise ValueError("DeepSeek did not return every reference")
+    # Missing rows are safe to recover locally: use only the supplied raw
+    # description and leave publisher/document number empty. This may produce a
+    # less polished appendix label, but cannot invent or misattribute metadata.
+    for source in sources:
+        cite_id = str(source["cite_id"])
+        references.setdefault(cite_id, _fallback_reference_fields(source))
     return references
+
+
+def _fallback_reference_fields(source: Mapping[str, Any]) -> dict[str, str]:
+    description = str(source.get("description", "")).strip()
+    remainder = re.sub(
+        r"^网页发布时间：\S+\s*", "", description, count=1
+    ).strip(" ：:，,。;")
+    # Preserve source text verbatim apart from whitespace compaction/truncation.
+    # A generic label is used only when the source description has no payload.
+    title = re.sub(r"\s+", " ", remainder).strip()
+    if len(title) > 96:
+        title = title[:96].rstrip() + "…"
+    return {
+        "reference_title": title or "网页来源",
+        "reference_publisher": "",
+        "reference_document_number": "",
+    }
+
+
+def _batch_cache_key(
+    batch: Sequence[Mapping[str, Any]], model: str
+) -> str:
+    payload = {
+        "model": model,
+        "references": [
+            {
+                "cite_id": str(source.get("cite_id", "")),
+                "description": str(source.get("description", "")),
+            }
+            for source in batch
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _create_completion_with_retry(client: OpenAI, **kwargs: Any) -> Any:
+    for attempt in range(1, _NETWORK_ATTEMPTS + 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError):
+            if attempt >= _NETWORK_ATTEMPTS:
+                raise
+            time.sleep(2 ** (attempt - 1))
+    raise AssertionError("unreachable")
 
 
 def normalize_reference_catalog(
@@ -81,6 +136,7 @@ def normalize_reference_catalog(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = 120,
+    cache_path: str | Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Extract web-reference fields and deterministically format all sources."""
 
@@ -94,8 +150,20 @@ def normalize_reference_catalog(
     ]
     if web_sources:
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        cache_file = Path(cache_path).resolve() if cache_path else None
+        cache: dict[str, dict[str, dict[str, str]]] = {}
+        if cache_file and cache_file.is_file():
+            try:
+                value = json.loads(cache_file.read_text(encoding="utf-8"))
+                if isinstance(value, dict) and isinstance(value.get("batches"), dict):
+                    cache = value["batches"]
+            except (OSError, json.JSONDecodeError):
+                cache = {}
+        transport_unavailable = False
         for start in range(0, len(web_sources), _BATCH_SIZE):
             batch = web_sources[start : start + _BATCH_SIZE]
+            cache_key = _batch_cache_key(batch, model)
+            fields_by_id = cache.get(cache_key)
             request_input = {
                 "references": [
                     {
@@ -105,22 +173,44 @@ def normalize_reference_catalog(
                     for source in batch
                 ]
             }
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": json.dumps(request_input, ensure_ascii=False),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-            )
-            content = response.choices[0].message.content
-            if not content:
-                raise ValueError("DeepSeek returned empty content")
-            for cite_id, fields in _parse_references(content, batch).items():
+            if not isinstance(fields_by_id, dict):
+                if transport_unavailable:
+                    fields_by_id = {
+                        str(source["cite_id"]): _fallback_reference_fields(source)
+                        for source in batch
+                    }
+                else:
+                    try:
+                        response = _create_completion_with_retry(client,
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": _SYSTEM_PROMPT},
+                                {"role": "user", "content": json.dumps(request_input, ensure_ascii=False)},
+                            ],
+                            response_format={"type": "json_object"},
+                            temperature=0,
+                        )
+                        content = response.choices[0].message.content
+                        if not content:
+                            raise ValueError("DeepSeek returned empty content")
+                        fields_by_id = _parse_references(content, batch)
+                    except (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError):
+                        # Reference-title normalization is presentational only. On a
+                        # persistent transport failure, source-only fallback is safer
+                        # than failing the cited deck or retrying the whole workflow.
+                        transport_unavailable = True
+                        fields_by_id = {
+                            str(source["cite_id"]): _fallback_reference_fields(source)
+                            for source in batch
+                        }
+                cache[cache_key] = fields_by_id
+                if cache_file:
+                    cache_file.parent.mkdir(parents=True, exist_ok=True)
+                    cache_file.write_text(
+                        json.dumps({"schema_version": "1.0.0", "batches": cache}, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+            for cite_id, fields in fields_by_id.items():
                 normalized[cite_id].update(fields)
 
     for source in normalized.values():

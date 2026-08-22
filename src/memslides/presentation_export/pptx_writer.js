@@ -133,7 +133,7 @@ function addPlaceholder(slide, pptx, pos, label = "Missing image") {
     fontFace: "Aptos",
     fontSize: 9,
     align: "center",
-    valign: "mid",
+    valign: "middle",
     margin: 0.02,
     fit: "shrink",
   });

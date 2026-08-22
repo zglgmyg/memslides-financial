@@ -113,6 +113,7 @@ def plan_visualizations(
             tuple[str, tuple[tuple[str, str], ...], str | None]
         ] = set()
         outline_evidence: set[tuple[str, str]] = set()
+        slide_plan_count = 0
         for candidate in candidates:
             forbidden = {"values", "categories", "series", "columns", "rows", "asset_path"} & set(candidate)
             if forbidden:
@@ -121,36 +122,60 @@ def plan_visualizations(
                     + ", ".join(sorted(forbidden))
                 )
             visual_type = str(candidate.get("type") or "")
-            if visual_type not in {"chart", "table"}:
+            if visual_type not in {"chart", "table", "image"}:
                 raise VisualizationPlanningError(
                     f"Unsupported visual candidate type: {visual_type or '<empty>'}"
                 )
-            candidate_refs = _refs(candidate.get("evidence_refs")) or slide_refs
+            candidate_refs = _refs(candidate.get("evidence_refs"))
+            if not candidate_refs:
+                candidate_refs = slide_refs
             _require_valid_evidence(snapshot, candidate_refs)
-            chart_intent = _intent(candidate)
-            key = (visual_type, tuple(sorted(candidate_refs)), chart_intent)
-            if key in planned_keys:
-                continue
+            chart_intent = None if visual_type == "image" else _intent(candidate)
             purpose = str(candidate.get("purpose") or candidate.get("description") or slide.get("key_message") or slide.get("title") or "").strip()
             requirement = candidate.get("data_requirement")
             requirement_items = requirement.items() if isinstance(requirement, Mapping) else ()
-            plans.append(
-                VisualizationPlan(
-                    slide_id=slide_id,
-                    visualization_id=str(candidate.get("candidate_id") or f"visual_auto_{auto_index:03d}"),
-                    visual_type=visual_type,
-                    purpose=purpose,
-                    chart_intent=chart_intent,
-                    data_requirement={
-                        str(key): str(value)
-                        for key, value in requirement_items
-                        if isinstance(key, str)
-                    },
-                    evidence_refs=candidate_refs,
-                    source_refs=_source_refs(slide, candidate),
-                )
+            plan_ref_groups = (candidate_refs,)
+            if visual_type == "image":
+                if not candidate.get("evidence_refs"):
+                    raise VisualizationPlanningError(
+                        "Image visual candidates require explicit figure evidence"
+                    )
+                if not 1 <= len(candidate_refs) <= 2 or any(
+                    kind != "figure" for kind, _ in candidate_refs
+                ):
+                    raise VisualizationPlanningError(
+                        "Image visual candidates require one or two figure references"
+                    )
+                plan_ref_groups = tuple((ref,) for ref in candidate_refs)
+            base_visualization_id = str(
+                candidate.get("candidate_id") or f"visual_auto_{auto_index:03d}"
             )
-            planned_keys.add(key)
+            for image_index, plan_refs in enumerate(plan_ref_groups, start=1):
+                key = (visual_type, tuple(sorted(plan_refs)), chart_intent)
+                if key in planned_keys:
+                    continue
+                visualization_id = base_visualization_id
+                if len(plan_ref_groups) > 1:
+                    visualization_id += f"_{image_index:02d}"
+                plans.append(
+                    VisualizationPlan(
+                        slide_id=slide_id,
+                        visualization_id=visualization_id,
+                        visual_type=visual_type,
+                        purpose=purpose,
+                        chart_intent=chart_intent,
+                        data_requirement={
+                            str(key): str(value)
+                            for key, value in requirement_items
+                            if isinstance(key, str)
+                        },
+                        evidence_refs=plan_refs,
+                        source_refs=_source_refs(slide, candidate),
+                    )
+                )
+                planned_keys.add(key)
+                auto_index += 1
+                slide_plan_count += 1
             outline_evidence.update(candidate_refs)
             for kind, identity in candidate_refs:
                 if kind == "block":
@@ -158,10 +183,9 @@ def plan_visualizations(
                         ("table", table_id)
                         for table_id in snapshot.block_table_ids.get(identity, ())
                     )
-            auto_index += 1
 
-        # Original PDF figures are intentionally restricted to dedicated,
-        # one-figure-per-slide pages in this phase.
+        # Dedicated figure pages remain a compatibility path for the small
+        # subset of dense source figures that genuinely need a full slide.
         if slide.get("slide_type") == "figure_page":
             figure_refs = tuple(ref for ref in slide_refs if ref[0] == "figure")
             if candidates or len(figure_refs) != 1 or len(slide_refs) != 1:
@@ -199,6 +223,8 @@ def plan_visualizations(
         if candidate_mode != "active":
             continue
         for located in located_candidates:
+            if slide_plan_count >= 2:
+                break
             key = (
                 located.visual_type,
                 tuple(sorted(located.evidence_refs)),
@@ -225,6 +251,7 @@ def plan_visualizations(
                 )
             )
             planned_keys.add(key)
+            slide_plan_count += 1
     return plans
 
 

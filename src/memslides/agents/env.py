@@ -165,7 +165,14 @@ class AgentEnv:
         return env
 
     async def tool_execute(self, tool_call: ToolCall) -> ChatMessage:
-        name = tool_call.function.name
+        requested_name = tool_call.function.name
+        # Some OpenAI-compatible models emit the common alias `think` even when
+        # the advertised MCP tool is named `thinking`.
+        name = (
+            "thinking"
+            if requested_name == "think" and "thinking" in self._tool_to_server
+            else requested_name
+        )
         started_at = time.time()
         perf_start = time.perf_counter()
         arguments: dict[str, Any] | None = None

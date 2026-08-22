@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "id": "original_figure_page",
-  "name": "原始PDF图片独立保真迁移",
+  "name": "原始PDF图片混合保真迁移",
   "category": "evidence",
   "priority": 80,
   "match": {
@@ -14,12 +14,13 @@
       "figure_inventory包含selectable=true且能够直接支持研报重要观点的原始图片"
     ],
     "recommended": [
-      "每张被选择的figure单独生成一个figure_page",
-      "evidence_refs只引用该一个figure",
-      "所有figure_page严格按照figure_inventory.order递增"
+      "原图优先嵌入语义相关的内容页",
+      "同章节且直接互补的两张图可配对展示",
+      "只有核心高密度原图才使用独立figure_page"
     ],
     "avoid": [
-      "不得一页放置多张figure",
+      "不得逐张复制figure_inventory",
+      "不得在一页放置超过两张figure",
       "不得为原始figure生成chart或table",
       "不得选择装饰图、无关图或交换PDF原始顺序"
     ]
@@ -38,17 +39,38 @@
     },
     "expected": {
       "page_role": "content",
-      "slide_type": "figure_page",
+      "slide_type": "industry_analysis",
       "section_ref": "sec-1-2",
-      "title": "公司PDT星通站实现一站多能",
-      "bullet_points": [],
+      "title": "1.2 星通产品布局",
+      "key_message": "公司已形成一站多能的星通产品能力。",
+      "bullet_points": [
+        "PDT星通站可直观支撑本页产品布局。"
+      ],
       "evidence_refs": [
+        {
+          "kind": "block",
+          "id": "blk-012"
+        },
         {
           "kind": "figure",
           "id": "fig-007"
         }
       ],
-      "visual_candidates": []
+      "visual_candidates": [
+        {
+          "candidate_id": "visual_007",
+          "type": "image",
+          "display_mode": "embedded",
+          "description": "嵌入原始PDT星通站图片",
+          "source_refs": ["src_report"],
+          "evidence_refs": [
+            {
+              "kind": "figure",
+              "id": "fig-007"
+            }
+          ]
+        }
+      ]
     }
   }
 }

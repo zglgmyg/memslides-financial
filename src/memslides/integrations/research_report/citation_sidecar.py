@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,25 @@ from .citation_reference_normalization import normalize_reference_catalog
 from .citation_resolution import build_pdf_source_numbers, resolve_page_citation_sources
 from .html_claims import extract_html_claims
 from .slide_citation_candidates import build_slide_citation_candidates
+
+
+def _mapping_cache_key(
+    html_claims: list[dict[str, str]],
+    candidate_units: list[dict[str, object]],
+    model: str,
+) -> str:
+    payload = {
+        "model": model,
+        "html_claims": html_claims,
+        "candidate_units": [
+            {"unit_id": unit.get("unit_id"), "text": unit.get("text")}
+            for unit in candidate_units
+        ],
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def run_citation_sidecar(
@@ -56,6 +76,7 @@ def run_citation_sidecar(
             model=model,
             base_url=base_url,
             timeout=timeout,
+            cache_path=html_dir.parent / "citation_reference_normalization_cache.json",
         )
         reference_catalog_file.write_text(
             json.dumps(source_catalog, ensure_ascii=False, indent=2) + "\n",
@@ -73,6 +94,19 @@ def run_citation_sidecar(
     units_by_id = {unit["unit_id"]: unit for unit in citation_units}
     source_numbers = build_pdf_source_numbers(source_catalog)
     updated_pages: dict[Path, str] = {}
+    cache_path = html_dir.parent / "citation_mapping_cache.json"
+    mapping_cache: dict[str, list[dict[str, object]]] = {}
+    if cache_path.is_file():
+        try:
+            cached_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached_payload, dict):
+                mapping_cache = {
+                    str(key): value
+                    for key, value in cached_payload.get("mappings", {}).items()
+                    if isinstance(value, list)
+                }
+        except (OSError, json.JSONDecodeError):
+            mapping_cache = {}
 
     for page_number, slide in enumerate(slide_outline.get("slides", []), start=1):
         slide_id = str(slide["slide_id"])
@@ -83,14 +117,29 @@ def run_citation_sidecar(
             units_by_id[unit_id]
             for unit_id in candidate_ids_by_slide.get(slide_id, [])
         ]
-        claim_mappings = judge_claim_citations(
-            html_claims,
-            candidate_units,
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            timeout=timeout,
-        )
+        cache_key = _mapping_cache_key(html_claims, candidate_units, model)
+        claim_mappings = mapping_cache.get(cache_key)
+        if claim_mappings is None:
+            claim_mappings = judge_claim_citations(
+                html_claims,
+                candidate_units,
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                timeout=timeout,
+            )
+            mapping_cache[cache_key] = claim_mappings
+            # Persist after every slide so a later network/model failure resumes
+            # from the last successful page instead of paying for all pages again.
+            cache_path.write_text(
+                json.dumps(
+                    {"schema_version": "1.0.0", "mappings": mapping_cache},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         resolved = resolve_page_citation_sources(
             claim_mappings,
             citation_units,

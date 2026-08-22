@@ -256,23 +256,25 @@ def build_slide_planning_messages(
         + "如果 case 示例与当前文档、Schema 或硬规则不一致，必须忽略 case 中冲突的部分。"
         + "\n\n# DocumentBundle 章节与证据约束\n"
         + "只能使用 section_catalog 中存在的 section_ref；不得新增章节或改变章节顺序。"
-        + "所有带 section_ref 的 slide，其 title 必须逐字复制 section_catalog 对应条目的 title，"
-        + "包括章节编号和标点；不得使用结论式标题或同义改写。"
+        + "所有带 section_ref 的 slide，其 section 字段必须逐字复制 section_catalog 对应条目的 title，"
+        + "包括章节编号和标点。title 是逐页观众可见标题：同一章节第一页可使用章节原题，"
+        + "后续页面必须使用当前页证据支持的独立主旨句，禁止机械重复同一标题。"
         + "正文 key_message 优先保留证据中的第一句主旨句，后续信息才允许提炼为 bullet_points。"
         + "正文应保持适合演示文稿的低密度；编译器会依据实际布局容量自动分页，"
         + "不得为了控制篇幅直接丢弃有证据支撑的重要内容。"
         + "每个 content slide 必须提供 evidence_refs，且只能引用 runtime_context_memories 中的原生证据。"
         + "source_refs 仍必须引用 required_source_id。"
-        + "page_role 只能使用 title、content、closing，禁止使用 section。"
+        + "page_role 只能使用 title、content、closing，禁止使用 section；第一页必须是唯一的 title，最后一页必须是唯一的 closing。"
         + "\n\n# 原始 PDF Figure 保真迁移\n"
         + "figure_inventory 是应用程序根据 PDF 原始顺序生成的图片目录。"
         + "只选择 selectable=true 且能直接支撑研报重要观点的 figure；不得选择装饰图或无关图片。"
-        + "每张被选择的 figure 必须生成一个独立 slide，page_role=content，"
-        + "slide_type=figure_page，bullet_points=[]，visual_candidates=[]，"
-        + "evidence_refs 只能包含该一个 figure。"
-        + "figure_page 的 title 优先使用 caption，section_ref 必须等于 figure 的 section_id。"
-        + "被选择的 figure_page 必须严格按照 figure_inventory.order 递增排列，"
-        + "不得交换顺序、合并多图或在一页加入解释性正文。"
+        + "原图默认作为 type=image、display_mode=embedded 嵌入语义相关的内容页；"
+        + "两张同章节且能直接对比或互补的原图可使用 display_mode=paired，"
+        + "候选 evidence_refs 按 figure_inventory.order 包含恰好两张图。每张内容页最多两张原图。"
+        + "只有高信息密度、核心且无合适内容页承载的 figure 才使用独立 figure_page；"
+        + "figure_page 仍必须一页一图，title 使用 caption，section_ref 等于 figure.section_id。"
+        + "独立 figure_page 通常每章节不超过1页，总数不得超过非图正文页数的40%。"
+        + "不得逐张复制 figure_inventory；省略重复、装饰性或与叙事主线关联弱的图片。"
         + "\n\n# 目录前摘要强制保留\n"
         + "用户 payload 的 front_matter_summary 由应用程序确定性识别。"
         + "当 required=true 时，必须在 title 页之后、其他所有非 title 页面之前，"
@@ -313,11 +315,14 @@ def build_slide_planning_messages(
             "preserve_section_hierarchy": True,
             "preserve_section_order": True,
             "no_new_sections": True,
-            "preserve_source_section_title_verbatim": True,
+            "preserve_source_section_label_verbatim": True,
+            "unique_audience_facing_slide_titles": True,
             "prefer_first_topic_sentence_verbatim": True,
             "content_slides_require_evidence": True,
             "preserve_front_matter_summary": bool(front_summary["required"]),
-            "figure_page_one_figure_only": True,
+            "figure_content_modes": ["embedded", "paired", "standalone"],
+            "maximum_figures_per_content_slide": 2,
+            "maximum_standalone_figure_page_ratio": 0.4,
             "preserve_figure_order": True,
             "narrative_plan_is_advisory": True,
         },

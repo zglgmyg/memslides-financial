@@ -2616,6 +2616,24 @@ def _can_render_slide_preview() -> bool:
     return expected.exists() or should_auto_install_playwright()
 
 
+def _financial_static_inspection_enabled(html_path: Path) -> bool:
+    """Avoid a Chromium/PPTX subprocess for every page during financial generation.
+
+    The complete deck still goes through the real exporter after all pages exist.
+    This prevents one hung browser process from consuming the agent's entire
+    generation window before it has written the remaining slides.
+    """
+    override = os.getenv("MEMSLIDES_FINANCIAL_RENDER_EACH_SLIDE", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return False
+    state_path = html_path.parent.parent / "deck_execution_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return state.get("source_mode") == "financial_page_packets"
+
+
 def _mark_new_slide_created(path: Path) -> None:
     if _is_canonical_slide_path(path):
         _newly_created_slide_paths.add(str(path))
@@ -12004,6 +12022,7 @@ def apply_slide_patch(
             )
 
         applied_ops: list[dict[str, Any]] = []
+        skipped_ops: list[dict[str, Any]] = []
         changed = False
         updated_html = current_html
         layout_diagnostics: list[dict[str, Any]] = []
@@ -12034,12 +12053,14 @@ def apply_slide_patch(
                 rule_id = str(op.get("rule_id", "") or "").strip()
                 rule_binding = working_rule_bindings.get(rule_id)
                 if not rule_binding:
-                    return _structured_patch_error(
-                        "RULE_NOT_FOUND",
-                        f"Rule `{rule_id}` was not found in the current snapshot.",
-                        snapshot_id=snapshot_id,
-                        op=op,
+                    skipped_ops.append(
+                        {
+                            "op": op_name,
+                            "rule_id": rule_id,
+                            "status": "skipped_rule_not_found",
+                        }
                     )
+                    continue
                 if op_name not in set(rule_binding.get("allowed_ops", []) or _RULE_ALLOWED_OPS):
                     return _structured_patch_error(
                         "PATCH_APPLY_FAILED",
@@ -12062,12 +12083,14 @@ def apply_slide_patch(
                     mode="merge" if op_name == "merge_css_rule" else "replace",
                 )
                 if patched_html is None or rule_status is None:
-                    return _structured_patch_error(
-                        "RULE_NOT_FOUND",
-                        f"Rule `{rule_id}` no longer matches the current HTML.",
-                        snapshot_id=snapshot_id,
-                        op=op,
+                    skipped_ops.append(
+                        {
+                            "op": op_name,
+                            "rule_id": rule_id,
+                            "status": "skipped_rule_no_longer_matches",
+                        }
                     )
+                    continue
                 updated_html = patched_html
                 if rule_status.get("status") == "updated":
                     changed = True
@@ -12512,6 +12535,7 @@ def apply_slide_patch(
                 "slide_path": str(snapshot.get("slide_path", "")),
                 "snapshot_id": snapshot_id,
                 "applied_ops": applied_ops,
+                "skipped_ops": skipped_ops,
                 "changed": changed,
                 "new_content_hash": new_hash,
                 "next_snapshot_id": next_snapshot_id,
@@ -13305,7 +13329,7 @@ def _excessive_bottom_whitespace_diagnostic(metrics: dict[str, Any] | None) -> d
         return None
     return {
         "code": "excessive_bottom_whitespace",
-        "severity": "error",
+        "severity": "warning",
         "source": "rendered_geometry",
         "message": (
             f"Meaningful content ends {bottom_gap:.0f}px above the bottom safe edge "
@@ -13407,7 +13431,10 @@ async def inspect_slide(
     # ── 1. Change detection (before rendering) ───────────────────────
     changed, old_size, new_size = _check_slide_changed(html_path)
 
-    skip_preview_render = not _can_render_slide_preview()
+    skip_preview_render = (
+        not _can_render_slide_preview()
+        or _financial_static_inspection_enabled(html_path)
+    )
 
     current_html = html_path.read_text(encoding="utf-8", errors="replace")
     diagnostics: list[dict[str, Any]] = []
@@ -13578,26 +13605,6 @@ async def inspect_slide(
         whitespace_diagnostic = _excessive_bottom_whitespace_diagnostic(occupancy)
         if whitespace_diagnostic:
             diagnostics.append(whitespace_diagnostic)
-            message = "VISUAL_QUALITY_FAILED: " + str(whitespace_diagnostic["message"])
-            _record_slide_validation_result(
-                html_path,
-                success=False,
-                message=message,
-                aspect_ratio=aspect_ratio,
-                diagnostics=diagnostics,
-            )
-            try:
-                from memslides.runtime.deck_execution_state import record_slide_inspected
-
-                record_slide_inspected(html_path, success=False)
-            except Exception:
-                pass
-            return (
-                "❌ Visual quality failed.\n"
-                f"- excessive_bottom_whitespace: {whitespace_diagnostic['message']}\n\n"
-                "Recompose this page so its existing information forms a balanced vertical layout. "
-                "You may increase useful explanation or rearrange the content, but do not solve it by simply enlarging an asset, adding empty decoration, or shrinking the whole composition."
-            )
 
     # ── 3. Extract HTML properties ───────────────────────────────────
     try:

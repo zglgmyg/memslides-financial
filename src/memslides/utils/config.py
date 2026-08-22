@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import json_repair
 import yaml
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 from openai.types.chat import ChatCompletion
 from openai.types.images_response import ImagesResponse
 from pydantic import BaseModel, Field, PrivateAttr, ValidationError
@@ -945,7 +945,7 @@ class LLM(BaseModel):
         iter_endpoints = cycle(self._endpoints)
         endpoint = next(iter_endpoints)
         async with self._semaphore:
-            for _ in range(effective_retry_times):
+            for attempt_index in range(effective_retry_times):
                 if non_retryable_failed_endpoints:
                     while (
                         (
@@ -1018,9 +1018,15 @@ class LLM(BaseModel):
                                 f"[{current_endpoint.model}] non-retryable route error detected on all endpoints; aborting remaining retries"
                             )
                             break
+                    elif isinstance(
+                        e,
+                        (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError),
+                    ) and attempt_index + 1 < effective_retry_times:
+                        await asyncio.sleep(min(8, 2 ** attempt_index))
                     endpoint = next(iter_endpoints)
         raise ValueError(
-            f"All models failed after {effective_retry_times} retries:\n{errors}"
+            "All models failed; "
+            f"attempts_made={len(errors)}, retry_budget={effective_retry_times}:\n{errors}"
         )
 
     async def close(self) -> None:

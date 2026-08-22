@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from memslides.research_pipeline.document_bundle.errors import DocumentBundleError
 from memslides.research_pipeline.document_bundle.markdown import build_from_markdown
 
 
@@ -63,7 +60,7 @@ def test_chart_ids_bind_to_pdf_figures_in_document_order(tmp_path: Path) -> None
     assert (tmp_path / "paired" / figures[1]["asset_path"]).read_bytes() == b"figure-2"
 
 
-def test_chart_pairing_rejects_count_mismatch(tmp_path: Path) -> None:
+def test_chart_pairing_tolerates_count_mismatch_with_warning(tmp_path: Path) -> None:
     markdown = tmp_path / "report.md"
     markdown.write_text(
         "# Report\n\n![Only chart](chart:chart_only)\n",
@@ -71,13 +68,13 @@ def test_chart_pairing_rejects_count_mismatch(tmp_path: Path) -> None:
     )
     pdf_bundle, pdf_document = _pdf_bundle(tmp_path, 2)
 
-    with pytest.raises(
-        DocumentBundleError,
-        match="Markdown chart count does not match PDF figure count: 1 != 2",
-    ):
-        build_from_markdown(
-            markdown,
-            tmp_path / "paired",
-            pdf_bundle_directory=pdf_bundle,
-            pdf_document=pdf_document,
-        )
+    document, validation = build_from_markdown(
+        markdown,
+        tmp_path / "paired",
+        pdf_bundle_directory=pdf_bundle,
+        pdf_document=pdf_document,
+    )
+
+    assert document["figures"][0]["pdf_figure_id"] == "fig-001"
+    assert validation["status"] == "needs_review"
+    assert validation["issues"][0]["code"] == "markdown_pdf_chart_count_mismatch"

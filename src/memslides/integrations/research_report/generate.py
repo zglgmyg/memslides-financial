@@ -13,6 +13,8 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
+from lxml import etree, html as lxml_html
+
 from .adapter import AdaptationResult, adapt_research_report
 
 
@@ -116,6 +118,16 @@ def _outline_page_roles(outline_path: Path, expected_count: int) -> list[str]:
         raise FinancialGenerationError(
             "The first financial outline slide must declare page_role=title."
         )
+    closing_pages = [
+        str(index)
+        for index, role in enumerate(roles, start=1)
+        if role == "closing"
+    ]
+    if closing_pages != [str(len(roles))]:
+        raise FinancialGenerationError(
+            "The financial outline must contain exactly one closing page at the end; "
+            "closing pages=" + (",".join(closing_pages) or "none")
+        )
     return roles
 
 
@@ -161,11 +173,20 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
    append a second version of its title, body, chart, or table.
    Title and closing pages must use distinct compositions and must not contain an
    element marked `data-financial-role="content-title-bar"`.
+   The SJTU brand postprocessor owns the title/closing background and university
+   marks. Do not use a report-page screenshot, source figure, chart, or any image
+   containing baked-in titles, logos, labels, or body text as a full-slide title or
+   closing background. Keep title/closing copy as native HTML text exactly once.
+   Keep the title page minimal: title, subtitle/report identity, and optional source
+   footer only. Do not place revenue, profit, KPI, metric cards, charts, or tables on
+   the title page. All title-page text must be white or near-white on the SJTU blue
+   background.
    Every content page must place its visible page title in exactly one element marked
    `data-financial-role="content-title-bar"`. The title bar must span the full page width,
    sit flush against the top, left, and right page edges with no outer whitespace, use a
    #1E3A5F blue background with white title text, and reserve its height before laying out
-   the page body below it.
+   the page body below it. Use that page's finalized outline title verbatim; never reuse
+   another page's title.
 4. Use only this exact source palette in slide HTML:
    primary=#1E3A5F, data_primary=#2563EB, data_dark=#1E40AF,
    accent=#D97706, accent_light=#F59E0B, border=#CBD5E1,
@@ -176,7 +197,15 @@ def _financial_design_guidance(page_roles: list[str]) -> str:
    shadows or subtle overlays.
 5. Freely design each page's composition, hierarchy, spacing, components, title
    placement, and visual structure within those content, role, and palette constraints.
-   Create and refine `design_plan.md` using the normal MemSlides workflow."""
+   Create `design_plan.md` with the exact required top-level heading `# Design Plan`
+   and the required sections `Design Goal`, `Theme Keywords`, `Color Palette`,
+   `Typography`, `Spacing & Grid`, `Page Archetypes`, `Component Rules`, and
+   `Do / Don't` before generating slides.
+6. Coverage is the first priority: generate every missing slide in order before doing
+   optional visual refinements. Do not spend repeated turns redesigning an already
+   valid slide while later slide files are still missing. For an existing slide, always
+   obtain a fresh snapshot immediately before patching; use returned next-snapshot IDs
+   and never reuse stale rule IDs, target IDs, content hashes, or placeholder hashes."""
 
 
 def _validate_financial_html_contract(
@@ -229,6 +258,31 @@ def _validate_financial_html_contract(
         elif expected_role in {"title", "closing"} and has_content_title_bar:
             violations.append(f"{name}: {expected_role} page must not use a content title bar")
 
+        if expected_role in {"title", "closing"}:
+            for image_tag in re.findall(r"<img\b[^>]*>", html, flags=re.I | re.S):
+                if "sjtu-financial-title-closing-background" in image_tag:
+                    continue
+                compact = re.sub(r"\s+", "", image_tag).lower()
+                is_marked_background = bool(
+                    re.search(
+                        r"data-memslides-pptx-background\s*=\s*(['\"])true\1",
+                        image_tag,
+                        flags=re.I,
+                    )
+                )
+                full_bleed = (
+                    ("position:absolute" in compact or "position:fixed" in compact)
+                    and ("inset:0" in compact or "left:0" in compact)
+                    and ("width:100%" in compact or "width:1280px" in compact)
+                    and ("height:100%" in compact or "height:720px" in compact)
+                )
+                if is_marked_background or full_bleed:
+                    violations.append(
+                        f"{name}: {expected_role} page must not provide its own "
+                        "full-slide image background"
+                    )
+                    break
+
     if violations:
         raise FinancialGenerationError(
             "DeckDesigner violated the financial HTML contract: " + "; ".join(violations)
@@ -262,6 +316,47 @@ def _duplicate_visible_text_fragments(html: str) -> list[str]:
             continue
         counts[fragment] = counts.get(fragment, 0) + 1
     return sorted(fragment for fragment, count in counts.items() if count > 1)
+
+
+def _repair_duplicate_visible_text(path: Path) -> list[str]:
+    """Remove later duplicate visible text nodes while preserving their layout."""
+
+    source = path.read_text(encoding="utf-8")
+    try:
+        document = lxml_html.document_fromstring(source)
+    except (etree.ParserError, ValueError):
+        return []
+    seen: set[str] = set()
+    removed: list[str] = []
+    for node in document.xpath("//body//text()"):
+        parent = node.getparent()
+        if parent is None or any(
+            str(ancestor.tag).lower() in {"script", "style"}
+            for ancestor in [parent, *parent.iterancestors()]
+        ):
+            continue
+        text = re.sub(r"\s+", " ", unescape(str(node))).strip()
+        if len(text) < 12 or not re.search(r"[A-Za-z\u4e00-\u9fff]", text):
+            continue
+        if text in seen:
+            removed.append(text)
+            if getattr(node, "is_text", False):
+                parent.text = ""
+            elif getattr(node, "is_tail", False):
+                parent.tail = ""
+            continue
+        seen.add(text)
+
+    if removed:
+        doctype = document.getroottree().docinfo.doctype or None
+        repaired = etree.tostring(
+            document,
+            method="html",
+            encoding="unicode",
+            doctype=doctype,
+        )
+        path.write_text(repaired, encoding="utf-8")
+    return removed
 
 
 def _validate_slide_html_dir(
@@ -354,13 +449,14 @@ async def generate_financial_deck(
     citation_validation_path: str | Path | None = None,
     citation_source_catalog_path: str | Path | None = None,
     citation_model: str = "deepseek-v4-flash",
+    reuse_complete_html: bool = False,
 ) -> FinancialGenerationResult:
     """Run audited adaptation, DeckDesigner, repair, and PPTX/PDF export."""
 
     workspace = Path(output_dir).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     stale_pptx = list(workspace.glob("*.pptx"))
-    if stale_pptx:
+    if stale_pptx and not reuse_complete_html:
         raise FinancialGenerationError(
             f"Output workspace already contains a PPTX; use a fresh directory: {workspace}"
         )
@@ -409,13 +505,6 @@ async def generate_financial_deck(
         "do not add, remove, recalculate, redraw, or reinterpret financial evidence."
     )
     design_instruction = design_instruction + "\n\n" + _financial_design_guidance(page_roles)
-    options = SessionOptions(
-        config_file=Path(config_path).resolve() if config_path else None,
-        workspace=workspace,
-        language="zh",
-        memory=MemoryOptions(enabled=False),
-        check_llms=False,
-    )
     request = DeckRequest(
         instruction=design_instruction,
         num_pages=slide_count,
@@ -427,32 +516,108 @@ async def generate_financial_deck(
             "financial_artifacts_read_only": True,
             "financial_page_roles": page_roles,
             "financial_page_titles": page_titles,
-            "deck_designer_max_iterations": slide_count * 10,
+            # Coverage-first generation should not spend an unbounded number of
+            # model turns polishing a small number of early pages.
+            "deck_designer_max_iterations": max(160, slide_count * 8),
             "sjtu_html_branding": sjtu_branding,
         },
     )
 
-    session = MemSlidesSession(options=options)
-    try:
-        try:
-            deck_result = await _generate_with_timeout(
-                session,
-                request,
-                generation_timeout,
+    pptx_path: Path | None = None
+    pdf_path: Path | None = None
+    slide_html_dir: Path | None = None
+    existing_html_dir = workspace / "outputs"
+    if reuse_complete_html and existing_html_dir.is_dir():
+        existing_slide_paths = sorted(existing_html_dir.glob("slide_*.html"))
+        if len(existing_slide_paths) == slide_count:
+            print(
+                f"Reusing {slide_count} existing HTML slides; "
+                "DeckDesigner will not be called."
             )
-        finally:
-            _assert_unchanged(protected_hashes)
-    finally:
-        await session.close()
+            from memslides.integrations.research_report.html_brand_postprocess import (
+                apply_page_roles_to_html,
+                apply_sjtu_brand_to_html,
+            )
 
-    pptx_path = Path(deck_result.pptx_path).resolve() if deck_result.pptx_path else None
-    slide_html_dir = (
-        Path(deck_result.slide_html_dir).resolve() if deck_result.slide_html_dir else None
-    )
+            if sjtu_branding:
+                brand_report = apply_sjtu_brand_to_html(
+                    existing_html_dir, page_roles, page_titles
+                )
+                (workspace / "sjtu_html_brand_report.json").write_text(
+                    json.dumps(brand_report, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                apply_page_roles_to_html(existing_html_dir, page_roles, page_titles)
+            _validate_slide_html_dir(
+                existing_html_dir,
+                slide_count,
+                page_roles=page_roles,
+            )
+            from memslides.utils.webview import convert_html_to_pptx
+
+            pptx_path = workspace / f"{adaptation.manuscript.stem}.pptx"
+            await convert_html_to_pptx(
+                existing_html_dir,
+                pptx_path,
+                request.powerpoint_type,
+                speaker_notes_path=workspace / "speaker_manuscript.json",
+            )
+            slide_html_dir = existing_html_dir
+            _assert_unchanged(protected_hashes)
+        elif existing_slide_paths:
+            print(
+                "Existing HTML slide set is incomplete "
+                f"({len(existing_slide_paths)}/{slide_count}); DeckDesigner repair is required."
+            )
+
+    if pptx_path is None:
+        options = SessionOptions(
+            config_file=Path(config_path).resolve() if config_path else None,
+            workspace=workspace,
+            language="zh",
+            memory=MemoryOptions(enabled=False),
+            check_llms=False,
+        )
+        session = MemSlidesSession(options=options)
+        try:
+            try:
+                deck_result = await _generate_with_timeout(
+                    session,
+                    request,
+                    generation_timeout,
+                )
+            finally:
+                _assert_unchanged(protected_hashes)
+        finally:
+            await session.close()
+
+        pptx_path = (
+            Path(deck_result.pptx_path).resolve() if deck_result.pptx_path else None
+        )
+        slide_html_dir = (
+            Path(deck_result.slide_html_dir).resolve()
+            if deck_result.slide_html_dir
+            else None
+        )
+        pdf_path = Path(deck_result.pdf_path).resolve() if deck_result.pdf_path else None
+
     if pptx_path is None or not pptx_path.is_file():
         raise FinancialGenerationError("MemSlides did not produce a PPTX file.")
     if slide_html_dir is None or not slide_html_dir.is_dir():
         raise FinancialGenerationError("MemSlides did not produce a slide HTML directory.")
+    repaired_duplicates: list[str] = []
+    for html_path in sorted(slide_html_dir.glob("slide_*.html")):
+        repaired_duplicates.extend(_repair_duplicate_visible_text(html_path))
+    if repaired_duplicates:
+        from memslides.utils.webview import convert_html_to_pptx
+
+        await convert_html_to_pptx(
+            slide_html_dir,
+            pptx_path,
+            request.powerpoint_type,
+            speaker_notes_path=workspace / "speaker_manuscript.json",
+        )
     _validate_slide_html_dir(
         slide_html_dir,
         slide_count,
@@ -482,7 +647,6 @@ async def generate_financial_deck(
             request.powerpoint_type,
             speaker_notes_path=workspace / "speaker_manuscript.json",
         )
-    pdf_path = Path(deck_result.pdf_path).resolve() if deck_result.pdf_path else None
     if pdf_path is not None and not pdf_path.is_file():
         pdf_path = None
     if all(citation_paths):

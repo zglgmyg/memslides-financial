@@ -7,6 +7,23 @@ from bs4 import BeautifulSoup
 from memslides.tools import deck_runtime
 
 
+def test_financial_slide_inspection_defers_browser_render_until_final_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    slide = outputs / "slide_01.html"
+    slide.write_text("<html><body>slide</body></html>", encoding="utf-8")
+    (tmp_path / "deck_execution_state.json").write_text(
+        '{"source_mode":"financial_page_packets"}', encoding="utf-8"
+    )
+
+    assert deck_runtime._financial_static_inspection_enabled(slide) is True
+
+    monkeypatch.setenv("MEMSLIDES_FINANCIAL_RENDER_EACH_SLIDE", "1")
+    assert deck_runtime._financial_static_inspection_enabled(slide) is False
+
+
 def _bottom_safe_zone_violations(html: str):
     soup = BeautifulSoup(html, "lxml")
     css_rules = deck_runtime._parse_css_rules(

@@ -21,6 +21,7 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -33,6 +34,18 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+
+MAX_RETRY_OUTPUT_TOKENS = 32_000
+
+
+def expanded_retry_token_budget(current: int) -> int:
+    """Increase output capacity after a confirmed length truncation."""
+
+    return min(
+        MAX_RETRY_OUTPUT_TOKENS,
+        max(current + 4_000, int(current * 1.5)),
+    )
+
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parents[1]
     if str(project_root) not in sys.path:
@@ -44,6 +57,10 @@ from memslides.research_pipeline.document_intelligence.models import DocumentInt
 from memslides.research_pipeline.document_intelligence.loader import DocumentIntelligenceError
 from memslides.research_pipeline.outline_generator.bundle_validation import (
     canonicalize_outline_from_bundle,
+    canonicalize_slide_section_order,
+    compact_figure_pages_into_content_slides,
+    normalize_repeated_content_titles,
+    normalize_section_evidence_and_visual_budget,
     normalize_topic_sentence_key_messages,
     validate_outline_evidence,
 )
@@ -112,6 +129,59 @@ def fill_blank_key_messages(outline: Mapping[str, Any]) -> int:
             slide["key_message"] = fallback
             changes += 1
     return changes
+
+
+def ensure_terminal_closing_slide(
+    outline: Mapping[str, Any], narrative_plan: Mapping[str, Any]
+) -> int:
+    """Guarantee exactly one final closing page before downstream generation."""
+
+    slides = outline.get("slides", [])
+    if not isinstance(slides, list):
+        return 0
+    closing_slides = [
+        slide
+        for slide in slides
+        if isinstance(slide, dict) and slide.get("page_role") == "closing"
+    ]
+    if len(closing_slides) == 1 and slides and slides[-1] is closing_slides[0]:
+        return 0
+
+    if closing_slides:
+        closing = closing_slides[-1]
+        slides[:] = [
+            slide
+            for slide in slides
+            if not (isinstance(slide, dict) and slide.get("page_role") == "closing")
+        ]
+        slides.append(closing)
+        return max(1, len(closing_slides))
+
+    used_ids = {
+        str(slide.get("slide_id"))
+        for slide in slides
+        if isinstance(slide, Mapping) and slide.get("slide_id")
+    }
+    next_number = len(slides) + 1
+    slide_id = f"slide_{next_number:03d}"
+    while slide_id in used_ids:
+        next_number += 1
+        slide_id = f"slide_{next_number:03d}"
+    closing_message = str(narrative_plan.get("closing_message") or "感谢聆听").strip()
+    slides.append(
+        {
+            "slide_id": slide_id,
+            "page_role": "closing",
+            "slide_type": "summary",
+            "title": "结束语",
+            "key_message": closing_message,
+            "bullet_points": [],
+            "source_refs": [],
+            "evidence_refs": [],
+            "visual_candidates": [],
+        }
+    )
+    return 1
 
 
 class OutlineResponseError(OutlineGenerationError):
@@ -349,7 +419,9 @@ def call_deepseek(request_body: Mapping[str, Any], *, api_key: str, base_url: st
     message_count = len(messages) if isinstance(messages, list) else 0
     print(
         "Calling model API: "
-        f"url={endpoint}, messages={message_count}, payload_bytes={len(body)}"
+        f"url={endpoint}, messages={message_count}, payload_bytes={len(body)}, "
+        f"max_tokens={request_body.get('max_tokens')}, "
+        f"thinking={request_body.get('extra_body', {}).get('thinking', request_body.get('thinking'))}"
     )
     http_request = urllib.request.Request(
         endpoint,
@@ -379,6 +451,11 @@ def call_deepseek(request_body: Mapping[str, Any], *, api_key: str, base_url: st
     except urllib.error.URLError as exc:
         raise DeepSeekAPIError(
             f"Cannot connect to DeepSeek API: {exc.reason}",
+            retryable=True,
+        ) from exc
+    except (http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionResetError) as exc:
+        raise DeepSeekAPIError(
+            f"DeepSeek API response connection was interrupted: {exc}",
             retryable=True,
         ) from exc
     except json.JSONDecodeError as exc:
@@ -507,13 +584,14 @@ def generate_with_retries(
     """Call DeepSeek and retry only failures that can be corrected safely."""
     attempt_messages = list(messages)
     attempt_thinking = thinking
+    attempt_max_tokens = max_tokens
     last_error: Optional[OutlineGenerationError] = None
 
     for attempt in range(1, max_attempts + 1):
         request_body = build_request(
             attempt_messages,
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=attempt_max_tokens,
             thinking=attempt_thinking,
             reasoning_effort=reasoning_effort,
             api_provider=api_provider,
@@ -549,6 +627,9 @@ def generate_with_retries(
             if exc.truncated:
                 attempt_messages = build_truncation_retry_messages(messages)
                 attempt_thinking = "disabled"
+                attempt_max_tokens = expanded_retry_token_budget(
+                    attempt_max_tokens
+                )
             else:
                 attempt_messages = build_correction_messages(
                     messages,
@@ -820,6 +901,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 snapshot,
                 allowed_runtime_evidence,
             )
+            compact_figure_pages_into_content_slides(value, snapshot)
+            normalize_section_evidence_and_visual_budget(value, snapshot)
+            normalize_repeated_content_titles(value)
+            canonicalize_slide_section_order(value, snapshot)
+            ensure_terminal_closing_slide(value, narrative_plan)
 
         outline, issues, attempts_used = generate_with_retries(
             messages,

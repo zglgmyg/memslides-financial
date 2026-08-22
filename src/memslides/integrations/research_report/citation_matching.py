@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Mapping, Sequence
 
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
+_NETWORK_ATTEMPTS = 4
 
 
 _SYSTEM_PROMPT = """你只负责判断 PPT 观点是否被候选研报引用单元充分支持。
@@ -56,8 +58,18 @@ def _parse_mapping(
             "citation_unit_ids": unit_ids,
         }
 
-    if set(mappings_by_claim) != set(claim_ids):
-        raise ValueError("DeepSeek did not return every HTML claim")
+    # Omitted claims must never invalidate an otherwise usable deck or trigger a
+    # costly full regeneration. Treat them conservatively as unsupported: this
+    # can omit a reference, but can never invent or misattribute one.
+    for claim_id in claim_ids:
+        mappings_by_claim.setdefault(
+            claim_id,
+            {
+                "html_claim_id": claim_id,
+                "status": "unsupported",
+                "citation_unit_ids": [],
+            },
+        )
     return [mappings_by_claim[claim_id] for claim_id in claim_ids]
 
 
@@ -93,15 +105,22 @@ def judge_claim_citations(
         ],
     }
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(request_input, ensure_ascii=False)},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0,
-    )
+    for attempt in range(1, _NETWORK_ATTEMPTS + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(request_input, ensure_ascii=False)},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+            break
+        except (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError):
+            if attempt >= _NETWORK_ATTEMPTS:
+                raise
+            time.sleep(2 ** (attempt - 1))
     content = response.choices[0].message.content
     if not content:
         raise ValueError("DeepSeek returned empty content")

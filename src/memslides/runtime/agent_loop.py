@@ -24,7 +24,15 @@ from memslides.utils.constants import (
     MAX_MODIFY_ITERATIONS,
     WORKSPACE_BASE,
 )
-from memslides.utils.log import debug, error, info, set_logger, timer, warning
+from memslides.utils.log import (
+    debug,
+    error,
+    info,
+    reset_context_logger,
+    set_logger,
+    timer,
+    warning,
+)
 from memslides.utils.typings import ChatMessage, ConvertType, InputRequest, Role
 from memslides.utils.webview import (
     PlaywrightConverter,
@@ -4115,6 +4123,10 @@ class AgentLoop(_AgentLoopRuntimeBindings):
                 self.agent_env = None
                 self._session = None
                 self._env_owned = False
+        # AgentLoop construction installs a task-local logger. A financial
+        # workflow may create a fresh session for a safe retry in the same async
+        # task, so release that context just as we release MCP/session state.
+        reset_context_logger()
 
     @timer("MemSlides RevisionEditor")
     async def modify(

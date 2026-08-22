@@ -167,7 +167,17 @@
           "type": "string",
           "enum": [
             "chart",
-            "table"
+            "table",
+            "image"
+          ]
+        },
+        "display_mode": {
+          "type": "string",
+          "description": "原始图片在内容页中的呈现方式；仅用于 type=image。",
+          "enum": [
+            "embedded",
+            "paired",
+            "standalone"
           ]
         },
         "description": {
@@ -179,7 +189,7 @@
         },
         "evidence_refs": {
           "type": "array",
-          "description": "直接支持该候选视觉的原生 block/table 证据；新生成的大纲应提供。",
+          "description": "直接支持该候选视觉的原生 block/table/figure 证据；新生成的大纲应提供。",
           "items": {
             "$ref": "#/$defs/evidence_ref"
           },
@@ -191,6 +201,100 @@
         "columns": false,
         "rows": false
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "image"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "display_mode",
+              "evidence_refs"
+            ],
+            "properties": {
+              "evidence_refs": {
+                "minItems": 1,
+                "maxItems": 2,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "figure"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "image"
+              },
+              "display_mode": {
+                "const": "paired"
+              }
+            },
+            "required": [
+              "type",
+              "display_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_refs": {
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "image"
+              },
+              "display_mode": {
+                "enum": [
+                  "embedded",
+                  "standalone"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "display_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_refs": {
+                "minItems": 1,
+                "maxItems": 1
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": true
     },
     "slide": {

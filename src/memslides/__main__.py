@@ -64,6 +64,38 @@ async def _template_induct(args: argparse.Namespace) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+async def _financial_report(args: argparse.Namespace) -> None:
+    from memslides.integrations.research_report.workflow import (
+        FinancialReportWorkflowError,
+        run_financial_report_workflow,
+    )
+
+    try:
+        result = await run_financial_report_workflow(
+            args.input,
+            args.output_dir,
+            pdf_path=args.pdf,
+            parsed_json_path=args.parsed_json,
+            config_path=args.config,
+            resume=args.resume,
+            overwrite=args.overwrite,
+            instruction=args.instruction,
+            generation_timeout=args.generation_timeout,
+            model=args.model,
+            base_url=args.base_url,
+            api_provider=args.api_provider,
+            citation_model=args.citation_model,
+            max_tokens=args.max_tokens,
+            max_attempts=args.max_attempts,
+            speaker_max_tokens=args.speaker_max_tokens,
+            speaker_max_attempts=args.speaker_max_attempts,
+            timeout=args.timeout,
+        )
+    except FinancialReportWorkflowError as exc:
+        raise SystemExit(f"ERROR: {exc}") from exc
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="memslides")
     parser.add_argument("--config", help="Path to a MemSlides YAML config")
@@ -82,6 +114,39 @@ def build_parser() -> argparse.ArgumentParser:
     revise = subparsers.add_parser("revise", help="Revise an existing session workspace")
     revise.add_argument("--feedback", required=True, help="Natural-language revision feedback")
     revise.set_defaults(func=_revise)
+
+    financial = subparsers.add_parser(
+        "financial-report",
+        help="Generate a cited, SJTU-branded PPTX with speaker notes",
+    )
+    financial.add_argument(
+        "input",
+        help="Markdown report (same-stem PDF required) or a PDF report",
+    )
+    financial.add_argument("--output-dir", required=True)
+    financial.add_argument("--pdf", help="PDF override (default: same stem as Markdown)")
+    financial.add_argument(
+        "--parsed-json",
+        help="Parsed JSON override (default: discover <stem>_parsed.json or generate it)",
+    )
+    financial.add_argument("--resume", action="store_true")
+    financial.add_argument("--overwrite", action="store_true")
+    financial.add_argument("--instruction", default="")
+    financial.add_argument("--generation-timeout", type=float, default=3600)
+    financial.add_argument("--model")
+    financial.add_argument("--base-url")
+    financial.add_argument("--api-provider", choices=["auto", "deepseek", "siliconflow"])
+    financial.add_argument("--citation-model", default="deepseek-v4-flash")
+    financial.add_argument(
+        "--max-tokens",
+        type=int,
+        help="Initial output-token budget; confirmed truncation increases it automatically",
+    )
+    financial.add_argument("--max-attempts", type=int)
+    financial.add_argument("--speaker-max-tokens", type=int)
+    financial.add_argument("--speaker-max-attempts", type=int)
+    financial.add_argument("--timeout", type=int)
+    financial.set_defaults(func=_financial_report)
 
     template = subparsers.add_parser("template", help="Template utilities")
     template_subparsers = template.add_subparsers(dest="template_command", required=True)

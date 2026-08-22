@@ -16,6 +16,7 @@ from memslides.research_pipeline.outline_generator.generate_outline import (
     build_request,
     call_deepseek,
     extract_response_content,
+    expanded_retry_token_budget,
     parse_outline_content,
     resolve_api_provider,
 )
@@ -222,6 +223,8 @@ def generate_speaker_manuscript(
         snapshot, outline, narrative_plan, artifacts, schema, prompt
     )
     attempt_messages = list(original_messages)
+    attempt_max_tokens = max_tokens
+    attempt_thinking = thinking
     provider = resolve_api_provider(api_provider, base_url)
     last_error = ""
 
@@ -232,8 +235,8 @@ def generate_speaker_manuscript(
                 build_request(
                     attempt_messages,
                     model=model,
-                    max_tokens=max_tokens,
-                    thinking=thinking,
+                    max_tokens=attempt_max_tokens,
+                    thinking=attempt_thinking,
                     reasoning_effort=reasoning_effort,
                     api_provider=provider,
                 ),
@@ -258,6 +261,11 @@ def generate_speaker_manuscript(
             if not getattr(exc, "retryable", True):
                 raise SpeakerManuscriptError(last_error) from exc
             attempt_messages = list(original_messages)
+            if isinstance(exc, OutlineResponseError) and exc.truncated:
+                attempt_max_tokens = expanded_retry_token_budget(
+                    attempt_max_tokens
+                )
+                attempt_thinking = "disabled"
         if attempt >= max_attempts:
             break
     raise SpeakerManuscriptError(

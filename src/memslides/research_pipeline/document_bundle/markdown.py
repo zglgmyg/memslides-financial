@@ -77,12 +77,6 @@ def _paired_pdf_figures(
             str(figure.get("id") or ""),
         ),
     )
-    if len(chart_blocks) != len(pdf_figures):
-        raise DocumentBundleError(
-            "Markdown chart count does not match PDF figure count: "
-            f"{len(chart_blocks)} != {len(pdf_figures)}"
-        )
-
     pairs: dict[str, dict[str, Any]] = {}
     chart_ids: set[str] = set()
     for chart_block, pdf_figure in zip(chart_blocks, pdf_figures):
@@ -233,6 +227,25 @@ def build_from_markdown(
     tables: list[dict[str, Any]] = []
     figures: list[dict[str, Any]] = []
     image_issues: list[dict[str, Any]] = []
+    if pdf_document is not None:
+        markdown_chart_count = sum(
+            block.get("type") == "image"
+            and str(block.get("url") or "").startswith("chart:")
+            for block in parsed["blocks"]
+        )
+        pdf_figure_count = len(pdf_document.get("figures", []))
+        if markdown_chart_count != pdf_figure_count:
+            image_issues.append(
+                {
+                    "severity": "warning",
+                    "code": "markdown_pdf_chart_count_mismatch",
+                    "message": (
+                        "Markdown chart count does not match PDF figure count; "
+                        "paired the available figures in document order: "
+                        f"{markdown_chart_count} != {pdf_figure_count}"
+                    ),
+                }
+            )
     section_ids: dict[tuple[str, ...], str] = {}
     sections: list[dict[str, Any]] = []
 
@@ -312,6 +325,7 @@ def build_from_markdown(
                 raw_reference.startswith("chart:")
                 and pdf_bundle_directory is not None
                 and pdf_document is not None
+                and str(source["block_id"]) in paired_figures
             ):
                 chart_id = raw_reference.removeprefix("chart:").strip()
                 asset_path, matched_pdf_figure = _materialize_pdf_figure(
