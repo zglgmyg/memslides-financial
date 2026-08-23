@@ -469,6 +469,7 @@ async def run_financial_report_workflow(
                 max_attempts=limits["max_attempts"], timeout=timeout,
                 speaker_max_tokens=limits["speaker_max_tokens"],
                 speaker_max_attempts=limits["speaker_max_attempts"],
+                export_figure_sources=not citations_required,
             )
             _mark(manifest_path, manifest, "research", warnings=list(warnings))
         except Exception as exc:
@@ -650,6 +651,49 @@ async def run_financial_report_workflow(
                 ] = True
                 _write_json(manifest_path, manifest)
 
+    human_source_report: dict[str, Any] | None = None
+    if not citations_required:
+        source_manifest = research_dir / "figure_source_manifest.json"
+        application_report = deck_dir / "human_pdf_figure_citation_report.json"
+        if source_manifest.is_file():
+            if not _stage_passed(
+                manifest, "human_figure_citations", [application_report]
+            ):
+                _mark_running(manifest_path, manifest, "human_figure_citations")
+                try:
+                    from .human_pdf_citations import (
+                        apply_human_pdf_figure_citations,
+                    )
+
+                    human_source_report = await apply_human_pdf_figure_citations(
+                        research_directory=research_dir,
+                        deck_directory=deck_dir,
+                    )
+                    _write_json(application_report, human_source_report)
+                    _mark(
+                        manifest_path,
+                        manifest,
+                        "human_figure_citations",
+                        **human_source_report["summary"],
+                        report=str(application_report),
+                    )
+                except Exception as exc:
+                    _mark_failed(
+                        manifest_path, manifest, "human_figure_citations", exc
+                    )
+                    raise FinancialReportWorkflowError(
+                        f"Human figure citation stage failed: {exc}"
+                    ) from exc
+            else:
+                human_source_report = _read_json(application_report)
+            cited_pptx = str(
+                (human_source_report or {}).get("outputs", {}).get(
+                    "cited_pptx", ""
+                )
+            )
+            if cited_pptx and Path(cited_pptx).is_file():
+                pptx_path = Path(cited_pptx).resolve()
+
     _mark_running(manifest_path, manifest, "compliance")
     try:
         compliance = _final_compliance(
@@ -663,6 +707,13 @@ async def run_financial_report_workflow(
         mandatory_features = ["sjtu_branding", "speaker_notes"]
         if citations_required:
             mandatory_features.insert(0, "citations")
+        elif int(
+            (human_source_report or {}).get("summary", {}).get(
+                "applied_count", 0
+            )
+            or 0
+        ):
+            mandatory_features.insert(0, "human_figure_sources")
         _write_json(final_receipt, {**compliance, "pptx": str(pptx_path), "mandatory_features": mandatory_features})
         _mark(manifest_path, manifest, "compliance", receipt=str(final_receipt))
     except Exception as exc:

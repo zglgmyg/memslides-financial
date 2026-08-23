@@ -265,6 +265,7 @@ def run_research_pipeline(
     timeout: int | None = None,
     speaker_max_tokens: int | None = None,
     speaker_max_attempts: int | None = None,
+    export_figure_sources: bool = False,
 ) -> tuple[Path, tuple[str, ...]]:
     """Generate a portable research-run directory without rendering a PPT."""
 
@@ -342,6 +343,15 @@ def run_research_pipeline(
             speaker_manuscript=speaker_manuscript,
             speaker_manuscript_markdown=speaker_manuscript_markdown,
         )
+        if export_figure_sources:
+            from memslides.integrations.research_report.human_pdf_citations import (
+                write_figure_source_manifest,
+            )
+
+            write_figure_source_manifest(
+                snapshot,
+                result / "figure_source_manifest.json",
+            )
         return result, tuple(issue.format() for issue in warnings)
     except ResearchRunPipelineError:
         raise
