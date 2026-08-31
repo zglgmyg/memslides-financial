@@ -43,6 +43,146 @@ def test_incomplete_http_response_is_retryable(monkeypatch: pytest.MonkeyPatch) 
     assert "interrupted" in str(captured.value)
 
 
+def test_timing_preserves_truncation_and_validation_retry_policy(monkeypatch, caplog):
+    replies = iter([
+        {"choices": [{"finish_reason": "length", "message": {"content": '{"slides":'}}]},
+        {"choices": [{"finish_reason": "stop", "message": {"content": '{"slides": []}'}}]},
+        {"choices": [{"finish_reason": "stop", "message": {"content": '{"slides": [], "ok": true}'}}]},
+    ])
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return json.dumps(next(replies)).encode()
+
+    def urlopen(request, *, timeout):
+        requests.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(generate_outline.urllib.request, "urlopen", urlopen)
+    outline, issues, attempts = generate_outline.generate_with_retries(
+        [{"role": "user", "content": "original"}],
+        {"type": "object", "required": ["ok"]},
+        api_key="private-key", base_url="https://example.invalid", timeout=7,
+        model="test", max_tokens=16000, thinking="enabled", reasoning_effort="high",
+        max_attempts=3,
+    )
+    assert attempts == 3 and outline == {"slides": [], "ok": True} and issues == []
+    assert [r["max_tokens"] for r in requests] == [16000, 24000, 24000]
+    assert [r["thinking"]["type"] for r in requests] == ["enabled", "disabled", "disabled"]
+    assert [len(r["messages"]) for r in requests] == [1, 2, 3]
+    assert "research.outline.request attempt=3 returned" in caplog.text
+    assert "[retry] stage=outline attempt=2" in caplog.text
+    assert "validation_errors=SCHEMA.INVALID $: 'ok' is a required property" in caplog.text
+    assert "private-key" not in caplog.text
+
+
+def test_outline_repairs_only_failed_slide(monkeypatch):
+    responses = iter([
+        {"slides": [
+            {"slide_id": "slide_001"},
+            {"slide_id": "slide_002", "ok": True},
+        ]},
+        {"slides": [{"slide_id": "slide_001", "ok": True}]},
+    ])
+    requests = []
+    postprocess_calls = []
+
+    def call(request, **kwargs):
+        requests.append(request)
+        return {"choices": [{"message": {"content": json.dumps(next(responses))}}]}
+
+    def postprocess(value):
+        postprocess_calls.append(value)
+        for slide in value["slides"]:
+            slide["normalized"] = True
+
+    monkeypatch.setattr(generate_outline, "call_deepseek", call)
+    outline, issues, attempts = generate_outline.generate_with_retries(
+        [{"role": "user", "content": "original"}],
+        {
+            "type": "object",
+            "required": ["slides"],
+            "properties": {
+                "slides": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["ok", "normalized"],
+                    },
+                }
+            },
+        },
+        api_key="test", base_url="https://example.invalid", timeout=7,
+        model="test", max_tokens=16000, thinking="enabled", reasoning_effort="high",
+        max_attempts=2, postprocess_outline=postprocess,
+    )
+
+    assert attempts == 2 and issues == [] and len(requests) == 2
+    assert len(postprocess_calls) == 2
+    assert outline["slides"] == [
+        {"slide_id": "slide_001", "ok": True, "normalized": True},
+        {"slide_id": "slide_002", "ok": True, "normalized": True},
+    ]
+    repair_payload = json.loads(requests[1]["messages"][-1]["content"])
+    assert repair_payload["required_slide_ids"] == ["slide_001"]
+
+
+def test_invalid_outline_local_repair_falls_back_to_complete_retry(monkeypatch):
+    responses = iter([
+        {"slides": [{"slide_id": "slide_001"}]},
+        {"slides": []},
+        {"slides": [{"slide_id": "slide_001", "ok": True}]},
+    ])
+    requests = []
+
+    def call(request, **kwargs):
+        requests.append(request)
+        return {"choices": [{"message": {"content": json.dumps(next(responses))}}]}
+
+    monkeypatch.setattr(generate_outline, "call_deepseek", call)
+    outline, issues, attempts = generate_outline.generate_with_retries(
+        [{"role": "user", "content": "original"}],
+        {
+            "type": "object",
+            "properties": {
+                "slides": {
+                    "type": "array",
+                    "items": {"type": "object", "required": ["ok"]},
+                }
+            },
+        },
+        api_key="test", base_url="https://example.invalid", timeout=7,
+        model="test", max_tokens=16000, thinking="enabled", reasoning_effort="high",
+        max_attempts=2,
+    )
+
+    assert attempts == 2 and issues == [] and len(requests) == 3
+    assert outline == {"slides": [{"slide_id": "slide_001", "ok": True}]}
+    assert "修正后的完整 JSON 对象" in requests[2]["messages"][-1]["content"]
+
+
+def test_outline_local_repair_rejects_global_or_unstable_slide_errors():
+    outline = {"slides": [{"slide_id": "slide_001"}]}
+    global_issue = generate_outline.Issue(
+        "error", "BUNDLE.SECTION_ORDER", "$.slides[0].section_ref", "wrong order"
+    )
+    missing_id_issue = generate_outline.Issue(
+        "error", "SCHEMA.INVALID", "$.slides[0].slide_id", "required"
+    )
+
+    assert generate_outline._failed_outline_slide_indices([global_issue], outline) == []
+    assert generate_outline._failed_outline_slide_indices(
+        [missing_id_issue], {"slides": [{}]}
+    ) == []
+
+
 def test_outline_postprocessing_adds_one_terminal_closing_slide() -> None:
     outline = {
         "slides": [

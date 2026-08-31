@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import timed_stage
+
 import logging
 import os
 import re
@@ -192,6 +194,7 @@ class MinerUClient:
         sanitized = str(value).replace(self._token, "[REDACTED]")
         return re.sub(r"https?://\S+", "[REDACTED_URL]", sanitized)
 
+    @timed_stage('mineru.prepare_upload')
     def request_upload_url(self, pdf_path: Path, data_id: str) -> tuple[str, str, str | None]:
         payload = {
             "files": [
@@ -245,6 +248,7 @@ class MinerUClient:
             )
         return batch_id, str(file_urls[0]), body.get("trace_id")
 
+    @timed_stage('mineru.upload')
     def upload_pdf(
         self,
         pdf_path: Path,
@@ -311,6 +315,7 @@ class MinerUClient:
                 return [data]
         return []
 
+    @timed_stage('mineru.poll')
     def poll_result(
         self,
         batch_id: str,
@@ -387,6 +392,7 @@ class MinerUClient:
                 )
             self._sleep(self.config.poll_interval_seconds)
 
+    @timed_stage('mineru.download')
     def download_zip(
         self,
         full_zip_url: str,
@@ -439,6 +445,7 @@ class MinerUClient:
             "Result ZIP download failed", batch_id=batch_id, trace_id=trace_id
         ) from last_error
 
+    @timed_stage('mineru.parse_to_raw')
     def parse_to_raw(self, pdf_path: Path, raw_directory: Path, data_id: str) -> None:
         """Run the fixed local-file flow and materialize the strict raw mapping."""
 

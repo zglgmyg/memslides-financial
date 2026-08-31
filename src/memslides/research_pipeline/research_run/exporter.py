@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import timed_stage
+
 import json
 import shutil
 import tempfile
@@ -165,6 +167,7 @@ def _validate_audit(
             )
 
 
+@timed_stage('research.export')
 def export_research_run(
     *,
     output_directory: Path,

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import log_validation_failure, timed_stage, timing_span
+
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -57,6 +60,26 @@ def _outline_slides(outline: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [slide for slide in outline.get("slides", []) if isinstance(slide, Mapping)]
 
 
+def _canonicalize_fixed_slide_fields(
+    manuscript: dict[str, Any], outline: Mapping[str, Any]
+) -> None:
+    actual = manuscript.get("slides")
+    expected = outline.get("slides")
+    if (
+        not isinstance(actual, list)
+        or not isinstance(expected, list)
+        or len(actual) != len(expected)
+        or not all(isinstance(slide, dict) for slide in actual)
+        or not all(isinstance(slide, Mapping) for slide in expected)
+    ):
+        return
+    for script_slide, outline_slide in zip(actual, expected):
+        script_slide["slide_id"] = str(outline_slide.get("slide_id") or "")
+        script_slide["slide_title"] = str(outline_slide.get("title") or "")
+    if actual:
+        actual[-1]["transition_to_next"] = ""
+
+
 def _refs(value: Mapping[str, Any]) -> set[tuple[str, str]]:
     return {
         (str(ref.get("kind")), str(ref.get("id")))
@@ -65,6 +88,7 @@ def _refs(value: Mapping[str, Any]) -> set[tuple[str, str]]:
     }
 
 
+@timed_stage('research.speaker_validation')
 def validate_speaker_manuscript(
     manuscript: Mapping[str, Any],
     schema: Mapping[str, Any],
@@ -196,6 +220,64 @@ def _correction_messages(
     ]
 
 
+def _failed_slide_indices(errors: Sequence[str], slide_count: int) -> list[int]:
+    indices: set[int] = set()
+    for error in errors:
+        match = re.search(r"(?:\$\.)?slides\[(\d+)\]", error)
+        if match is None:
+            return []
+        index = int(match.group(1))
+        if index >= slide_count:
+            return []
+        indices.add(index)
+    return sorted(indices)
+
+
+def _slide_correction_messages(
+    messages: Sequence[Mapping[str, str]],
+    manuscript: Mapping[str, Any],
+    errors: Sequence[str],
+    indices: Sequence[int],
+) -> list[dict[str, str]]:
+    slides = manuscript["slides"]
+    payload = {
+        "task": "repair_invalid_speaker_slides",
+        "errors": list(errors),
+        "invalid_slides": [slides[index] for index in indices],
+        "required_slide_ids": [slides[index]["slide_id"] for index in indices],
+        "response_format": {"slides": "complete corrected slide objects only"},
+        "constraints": {
+            "preserve_slide_ids": True,
+            "do_not_add_facts_or_evidence": True,
+        },
+    }
+    return [
+        *[dict(message) for message in messages],
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def _merge_slide_repairs(
+    manuscript: Mapping[str, Any], repairs: Mapping[str, Any], indices: Sequence[int]
+) -> dict[str, Any]:
+    repaired_slides = repairs.get("slides")
+    if not isinstance(repaired_slides, list) or len(repaired_slides) != len(indices):
+        raise SpeakerManuscriptError("local repair returned an invalid slide count")
+    expected_ids = {str(manuscript["slides"][index]["slide_id"]) for index in indices}
+    replacements = {
+        str(slide.get("slide_id")): slide
+        for slide in repaired_slides
+        if isinstance(slide, dict) and slide.get("slide_id")
+    }
+    if set(replacements) != expected_ids:
+        raise SpeakerManuscriptError("local repair returned unexpected slide_id values")
+    merged = dict(manuscript)
+    merged["slides"] = list(manuscript["slides"])
+    for index in indices:
+        merged["slides"][index] = replacements[str(manuscript["slides"][index]["slide_id"])]
+    return merged
+
+
 def generate_speaker_manuscript(
     snapshot: DocumentIntelligenceSnapshot,
     outline: Mapping[str, Any],
@@ -227,25 +309,28 @@ def generate_speaker_manuscript(
     attempt_thinking = thinking
     provider = resolve_api_provider(api_provider, base_url)
     last_error = ""
+    local_repair_attempted = False
 
     for attempt in range(1, max_attempts + 1):
         content = ""
         try:
-            response = call_deepseek(
-                build_request(
-                    attempt_messages,
-                    model=model,
-                    max_tokens=attempt_max_tokens,
-                    thinking=attempt_thinking,
-                    reasoning_effort=reasoning_effort,
-                    api_provider=provider,
-                ),
-                api_key=api_key,
-                base_url=base_url,
-                timeout=timeout,
-            )
+            with timing_span(f"research.speaker.request attempt={attempt}"):
+                response = call_deepseek(
+                    build_request(
+                        attempt_messages,
+                        model=model,
+                        max_tokens=attempt_max_tokens,
+                        thinking=attempt_thinking,
+                        reasoning_effort=reasoning_effort,
+                        api_provider=provider,
+                    ),
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=timeout,
+                )
             content = extract_response_content(response)
             manuscript = parse_outline_content(content)
+            _canonicalize_fixed_slide_fields(manuscript, outline)
             errors = validate_speaker_manuscript(
                 manuscript,
                 schema,
@@ -254,6 +339,49 @@ def generate_speaker_manuscript(
             )
             if not errors:
                 return manuscript
+            log_validation_failure("speaker", attempt, errors)
+            slides = manuscript.get("slides")
+            indices = _failed_slide_indices(
+                errors, len(slides) if isinstance(slides, list) else 0
+            )
+            if indices and not local_repair_attempted and attempt < max_attempts:
+                local_repair_attempted = True
+                try:
+                    with timing_span(f"research.speaker.local_repair attempt={attempt}"):
+                        repair_response = call_deepseek(
+                            build_request(
+                                _slide_correction_messages(
+                                    original_messages, manuscript, errors, indices
+                                ),
+                                model=model,
+                                max_tokens=attempt_max_tokens,
+                                thinking=attempt_thinking,
+                                reasoning_effort=reasoning_effort,
+                                api_provider=provider,
+                            ),
+                            api_key=api_key,
+                            base_url=base_url,
+                            timeout=timeout,
+                        )
+                    repaired = _merge_slide_repairs(
+                        manuscript,
+                        parse_outline_content(extract_response_content(repair_response)),
+                        indices,
+                    )
+                    _canonicalize_fixed_slide_fields(repaired, outline)
+                    repair_errors = validate_speaker_manuscript(
+                        repaired,
+                        schema,
+                        outline=outline,
+                        allowed_evidence_refs=allowed_refs,
+                    )
+                    if not repair_errors:
+                        return repaired
+                    log_validation_failure("speaker_local_repair", attempt, repair_errors)
+                except (DeepSeekAPIError, OutlineResponseError, SpeakerManuscriptError) as exc:
+                    log_validation_failure(
+                        "speaker_local_repair", attempt, [type(exc).__name__]
+                    )
             last_error = "; ".join(errors)
             attempt_messages = _correction_messages(original_messages, content, errors)
         except (DeepSeekAPIError, OutlineResponseError, json.JSONDecodeError) as exc:

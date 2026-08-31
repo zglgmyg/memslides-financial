@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import timed_stage, timing_span
+
 import json
 import os
 import shutil
@@ -52,6 +54,7 @@ def _validate_schema(value: Mapping[str, Any], schema_name: str, label: str) -> 
         )
 
 
+@timed_stage('research.document_parse')
 def _materialize_bundle(input_path: Path, working_directory: Path) -> Path:
     if input_path.is_dir() and (input_path / "document.json").is_file():
         return input_path.resolve()
@@ -105,6 +108,7 @@ def _materialize_bundle(input_path: Path, working_directory: Path) -> Path:
     return bundle_directory
 
 
+@timed_stage('research.outline')
 def _materialize_outline(
     *,
     bundle_directory: Path,
@@ -138,6 +142,7 @@ def _materialize_outline(
     return _load_json(outline_path, "Slide Outline")
 
 
+@timed_stage('research.narrative')
 def _materialize_narrative_plan(
     *,
     snapshot: Any,
@@ -172,6 +177,7 @@ def _materialize_narrative_plan(
     return plan, plan_path
 
 
+@timed_stage('research.speaker')
 def _materialize_speaker_manuscript(
     *,
     snapshot: Any,
@@ -251,6 +257,7 @@ def _blocking_generation_issues(
     return [issue for issue in issues if id(issue) not in warning_ids], warnings
 
 
+@timed_stage('research.total')
 def run_research_pipeline(
     input_path: Path,
     output_directory: Path,
@@ -278,10 +285,11 @@ def run_research_pipeline(
     temporary_root = Path(tempfile.mkdtemp(prefix="research-run-work-"))
     try:
         bundle_directory = _materialize_bundle(input_path, temporary_root)
-        snapshot = load_document_intelligence(
-            bundle_directory,
-            PROJECT_ROOT / "schemas" / "document_bundle.schema.json",
-        )
+        with timing_span('research.document_index'):
+            snapshot = load_document_intelligence(
+                bundle_directory,
+                PROJECT_ROOT / "schemas" / "document_bundle.schema.json",
+            )
         narrative_plan, narrative_plan_path = _materialize_narrative_plan(
             snapshot=snapshot,
             working_directory=temporary_root,
@@ -303,16 +311,19 @@ def run_research_pipeline(
             timeout=timeout,
             narrative_plan_path=narrative_plan_path,
         )
-        artifacts, issues = generate_visualizations(
-            outline,
-            snapshot,
-            candidate_mode=candidate_mode,
-        )
+        with timing_span('research.visualizations'):
+            artifacts, issues = generate_visualizations(
+                outline,
+                snapshot,
+                candidate_mode=candidate_mode,
+            )
         blocking, warnings = _blocking_generation_issues(outline, issues)
         if blocking:
             raise ResearchRunPipelineError(blocking[0].format())
-        ledger = build_numeric_fact_ledger(snapshot)
-        numeric_audit = audit_visualization_artifacts(artifacts, ledger)
+        with timing_span('research.numeric_ledger'):
+            ledger = build_numeric_fact_ledger(snapshot)
+        with timing_span('research.numeric_audit'):
+            numeric_audit = audit_visualization_artifacts(artifacts, ledger)
         (
             speaker_manuscript,
             _,
@@ -348,10 +359,11 @@ def run_research_pipeline(
                 write_figure_source_manifest,
             )
 
-            write_figure_source_manifest(
-                snapshot,
-                result / "figure_source_manifest.json",
-            )
+            with timing_span('research.figure_source_manifest'):
+                write_figure_source_manifest(
+                    snapshot,
+                    result / "figure_source_manifest.json",
+                )
         return result, tuple(issue.format() for issue in warnings)
     except ResearchRunPipelineError:
         raise

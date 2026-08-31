@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import timed_stage
+
 import json
 import shutil
 import tempfile
@@ -77,6 +79,7 @@ def _source_title(content_items: list[dict[str, Any]], embedded_title: str | Non
     return fallback
 
 
+@timed_stage('research.bundle_build')
 def build_from_raw(
     pdf_path: Path,
     source_raw_directory: Path,

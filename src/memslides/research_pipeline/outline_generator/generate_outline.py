@@ -20,10 +20,13 @@ Environment:
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import log_validation_failure, timed_stage, timing_span
+
 import argparse
 import http.client
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
@@ -204,7 +207,9 @@ class OutlineResponseError(OutlineGenerationError):
 class OutlineValidationError(OutlineGenerationError):
     """Raised when a generated outline violates the canonical contract."""
 
-    def __init__(self, issues: Sequence[Issue], *, content: str):
+    def __init__(
+        self, issues: Sequence[Issue], *, content: str, outline: Mapping[str, Any]
+    ):
         errors = [issue for issue in issues if issue.severity == "error"]
         summary = "\n".join(
             f"- {issue.code} {issue.path}: {issue.message}" for issue in errors[:20]
@@ -212,6 +217,7 @@ class OutlineValidationError(OutlineGenerationError):
         super().__init__(f"Generated outline failed validation:\n{summary}")
         self.issues = list(issues)
         self.content = content
+        self.outline = outline
         self.retryable = True
 
 
@@ -308,6 +314,7 @@ def effective_direct_planning_max_chars(configured: int, api_provider: str) -> i
     return configured
 
 
+@timed_stage('research.context_compression')
 def generate_context_memories(
     chunks: Sequence[IntelligenceChunk],
     *,
@@ -331,19 +338,20 @@ def generate_context_memories(
         for attempt in range(1, max_attempts + 1):
             content = ""
             try:
-                response = call_deepseek(
-                    build_request(
-                        messages,
-                        model=model,
-                        max_tokens=max_tokens,
-                        thinking=thinking,
-                        reasoning_effort=reasoning_effort,
-                        api_provider=api_provider,
-                    ),
-                    api_key=api_key,
-                    base_url=base_url,
-                    timeout=timeout,
-                )
+                with timing_span(f"research.compression.request chunk={chunk.id} attempt={attempt}"):
+                    response = call_deepseek(
+                        build_request(
+                            messages,
+                            model=model,
+                            max_tokens=max_tokens,
+                            thinking=thinking,
+                            reasoning_effort=reasoning_effort,
+                            api_provider=api_provider,
+                        ),
+                        api_key=api_key,
+                        base_url=base_url,
+                        timeout=timeout,
+                    )
                 content = extract_response_content(response)
                 memories.append(parse_context_memory(content, chunk))
                 break
@@ -564,6 +572,88 @@ def build_truncation_retry_messages(
     ]
 
 
+_GLOBAL_OUTLINE_ISSUES = {
+    "BUNDLE.FRONT_SUMMARY_ORDER",
+    "BUNDLE.SECTION_ORDER",
+    "FIGURE.ORDER",
+    "SLIDE.DUPLICATE_ID",
+}
+
+
+def _failed_outline_slide_indices(
+    issues: Sequence[Issue], outline: Mapping[str, Any]
+) -> list[int]:
+    slides = outline.get("slides")
+    if not isinstance(slides, list):
+        return []
+    indices: set[int] = set()
+    for issue in issues:
+        if issue.severity != "error":
+            continue
+        match = re.match(r"^\$\.slides\[(\d+)\](?:\.|$)", issue.path)
+        if issue.code in _GLOBAL_OUTLINE_ISSUES or match is None:
+            return []
+        index = int(match.group(1))
+        if index >= len(slides):
+            return []
+        indices.add(index)
+    selected = [slides[index] for index in sorted(indices)]
+    slide_ids = [slide.get("slide_id") for slide in selected if isinstance(slide, Mapping)]
+    if len(slide_ids) != len(selected) or any(
+        not isinstance(value, str) or not value for value in slide_ids
+    ):
+        return []
+    if len(set(slide_ids)) != len(slide_ids):
+        return []
+    return sorted(indices)
+
+
+def _outline_slide_correction_messages(
+    messages: Sequence[Mapping[str, str]],
+    outline: Mapping[str, Any],
+    errors: Sequence[str],
+    indices: Sequence[int],
+) -> list[dict[str, str]]:
+    slides = outline["slides"]
+    payload = {
+        "task": "repair_invalid_outline_slides",
+        "errors": list(errors),
+        "invalid_slides": [slides[index] for index in indices],
+        "required_slide_ids": [slides[index]["slide_id"] for index in indices],
+        "response_format": {"slides": "complete corrected slide objects only"},
+        "constraints": {
+            "preserve_slide_ids": True,
+            "do_not_add_facts_or_evidence": True,
+        },
+    }
+    return [
+        *[dict(message) for message in messages],
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def _merge_outline_slide_repairs(
+    outline: Mapping[str, Any], repairs: Mapping[str, Any], indices: Sequence[int]
+) -> dict[str, Any]:
+    repaired_slides = repairs.get("slides")
+    if not isinstance(repaired_slides, list) or len(repaired_slides) != len(indices):
+        raise OutlineGenerationError("local repair returned an invalid slide count")
+    expected_ids = {str(outline["slides"][index]["slide_id"]) for index in indices}
+    replacements = {
+        str(slide.get("slide_id")): slide
+        for slide in repaired_slides
+        if isinstance(slide, dict) and slide.get("slide_id")
+    }
+    if set(replacements) != expected_ids:
+        raise OutlineGenerationError("local repair returned unexpected slide_id values")
+    merged = dict(outline)
+    merged["slides"] = list(outline["slides"])
+    for index in indices:
+        merged["slides"][index] = replacements[str(outline["slides"][index]["slide_id"])]
+    return merged
+
+
+@timed_stage('research.outline_generation')
 def generate_with_retries(
     messages: List[Dict[str, str]],
     schema: Mapping[str, Any],
@@ -586,6 +676,7 @@ def generate_with_retries(
     attempt_thinking = thinking
     attempt_max_tokens = max_tokens
     last_error: Optional[OutlineGenerationError] = None
+    local_repair_attempted = False
 
     for attempt in range(1, max_attempts + 1):
         request_body = build_request(
@@ -598,22 +689,24 @@ def generate_with_retries(
         )
         content = ""
         try:
-            response = call_deepseek(
-                request_body,
-                api_key=api_key,
-                base_url=base_url,
-                timeout=timeout,
-            )
+            with timing_span(f"research.outline.request attempt={attempt}"):
+                response = call_deepseek(
+                    request_body,
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=timeout,
+                )
             content = extract_response_content(response)
             outline = parse_outline_content(content)
-            if postprocess_outline is not None:
-                postprocess_outline(outline)
-            issues = validate_outline_data(outline, schema) if validate_output else []
-            if validate_output and additional_validator is not None:
-                issues.extend(additional_validator(outline))
-            errors = [issue for issue in issues if issue.severity == "error"]
-            if errors:
-                raise OutlineValidationError(issues, content=content)
+            with timing_span("research.outline_validation"):
+                if postprocess_outline is not None:
+                    postprocess_outline(outline)
+                issues = validate_outline_data(outline, schema) if validate_output else []
+                if validate_output and additional_validator is not None:
+                    issues.extend(additional_validator(outline))
+                errors = [issue for issue in issues if issue.severity == "error"]
+                if errors:
+                    raise OutlineValidationError(issues, content=content, outline=outline)
             return outline, issues, attempt
         except DeepSeekAPIError as exc:
             last_error = exc
@@ -638,16 +731,68 @@ def generate_with_retries(
                 )
         except OutlineValidationError as exc:
             last_error = exc
+            validation_errors = [
+                f"{issue.code} {issue.path}: {issue.message}"
+                for issue in exc.issues
+                if issue.severity == "error"
+            ]
+            log_validation_failure("outline", attempt, validation_errors)
             if attempt >= max_attempts:
                 raise
+            indices = _failed_outline_slide_indices(exc.issues, exc.outline)
+            if indices and not local_repair_attempted:
+                local_repair_attempted = True
+                try:
+                    with timing_span(f"research.outline.local_repair attempt={attempt}"):
+                        repair_response = call_deepseek(
+                            build_request(
+                                _outline_slide_correction_messages(
+                                    messages, exc.outline, validation_errors, indices
+                                ),
+                                model=model,
+                                max_tokens=attempt_max_tokens,
+                                thinking=attempt_thinking,
+                                reasoning_effort=reasoning_effort,
+                                api_provider=api_provider,
+                            ),
+                            api_key=api_key,
+                            base_url=base_url,
+                            timeout=timeout,
+                        )
+                    repaired = _merge_outline_slide_repairs(
+                        exc.outline,
+                        parse_outline_content(extract_response_content(repair_response)),
+                        indices,
+                    )
+                    with timing_span("research.outline_validation"):
+                        if postprocess_outline is not None:
+                            postprocess_outline(repaired)
+                        repair_issues = (
+                            validate_outline_data(repaired, schema) if validate_output else []
+                        )
+                        if validate_output and additional_validator is not None:
+                            repair_issues.extend(additional_validator(repaired))
+                    repair_errors = [
+                        issue for issue in repair_issues if issue.severity == "error"
+                    ]
+                    if not repair_errors:
+                        return repaired, repair_issues, attempt + 1
+                    log_validation_failure(
+                        "outline_local_repair",
+                        attempt,
+                        [
+                            f"{issue.code} {issue.path}: {issue.message}"
+                            for issue in repair_errors
+                        ],
+                    )
+                except OutlineGenerationError as repair_error:
+                    log_validation_failure(
+                        "outline_local_repair", attempt, [type(repair_error).__name__]
+                    )
             attempt_messages = build_correction_messages(
                 messages,
                 previous_content=exc.content,
-                errors=[
-                    f"{issue.code} {issue.path}: {issue.message}"
-                    for issue in exc.issues
-                    if issue.severity == "error"
-                ],
+                errors=validation_errors,
             )
 
     raise last_error or OutlineGenerationError("Outline generation failed")

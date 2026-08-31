@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from memslides.utils.run_timing import timed_stage, timing_span
+
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -69,6 +71,7 @@ def _allowed_evidence_refs(
     }
 
 
+@timed_stage('research.narrative_validation')
 def validate_narrative_plan(
     plan: Mapping[str, Any],
     schema: Mapping[str, Any],
@@ -190,19 +193,20 @@ def generate_narrative_plan(
     for attempt in range(1, max_attempts + 1):
         content = ""
         try:
-            response = call_deepseek(
-                build_request(
-                    attempt_messages,
-                    model=model,
-                    max_tokens=attempt_max_tokens,
-                    thinking=attempt_thinking,
-                    reasoning_effort=reasoning_effort,
-                    api_provider=provider,
-                ),
-                api_key=api_key,
-                base_url=base_url,
-                timeout=timeout,
-            )
+            with timing_span(f"research.narrative.request attempt={attempt}"):
+                response = call_deepseek(
+                    build_request(
+                        attempt_messages,
+                        model=model,
+                        max_tokens=attempt_max_tokens,
+                        thinking=attempt_thinking,
+                        reasoning_effort=reasoning_effort,
+                        api_provider=provider,
+                    ),
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=timeout,
+                )
             content = extract_response_content(response)
             plan = parse_outline_content(content)
             errors = validate_narrative_plan(
