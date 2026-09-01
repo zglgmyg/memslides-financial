@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -14,10 +15,16 @@ from typing import Any
 from memslides.research_pipeline.research_run.pipeline import run_research_pipeline
 from memslides.research_pipeline.document_parser.parse_report import parse_file
 
-from .citation_appendix import parse_pdf_citation_appendix
+from .citation_appendix import write_citation_source_catalog_from_markdown
 from .citation_units import write_citation_units
 from .citation_validation import write_citation_validation_report
 from .generate import generate_financial_deck
+from .input_preparation import (
+    PreparedFinancialInput,
+    prepare_financial_input,
+    prepared_financial_input_paths,
+)
+from .inputs import FinancialReportInputs, resolve_financial_report_inputs
 
 
 class FinancialReportWorkflowError(RuntimeError):
@@ -66,29 +73,49 @@ def _resolve_inputs(
     pdf_path: str | Path | None,
     parsed_json_path: str | Path | None,
 ) -> dict[str, Path]:
-    report = Path(report_path).expanduser().resolve()
-    if report.suffix.lower() not in {".md", ".markdown", ".pdf"} or not report.is_file():
+    """Legacy dictionary view retained for callers outside the workflow."""
+
+    try:
+        return resolve_financial_report_inputs(
+            report_path, pdf_path, parsed_json_path
+        ).manifest_paths()
+    except ValueError as exc:
+        raise FinancialReportWorkflowError(str(exc)) from exc
+
+
+def _prepare_agent_citations(
+    inputs: FinancialReportInputs,
+    prepared: PreparedFinancialInput,
+    citation_dir: Path,
+) -> dict[str, Any]:
+    if inputs.markdown is None or prepared.agent_pdf_markdown is None:
         raise FinancialReportWorkflowError(
-            f"A Markdown or PDF report is required: {report}"
+            "Agent citation preparation requires Markdown and PDF raw data"
         )
-    is_markdown = report.suffix.lower() in {".md", ".markdown"}
-    pdf = (
-        Path(pdf_path).expanduser().resolve()
-        if pdf_path
-        else report.with_suffix(".pdf") if is_markdown else report
-    )
-    parsed = (
-        Path(parsed_json_path).expanduser().resolve()
-        if parsed_json_path
-        else report.with_name(report.stem + "_parsed.json")
-    )
-    if not pdf.is_file():
+    source_catalog = citation_dir / "citation_source_catalog.json"
+    citation_units = citation_dir / "citation_units.json"
+    validation_report = citation_dir / "citation_validation_report.json"
+    if not source_catalog.is_file():
+        write_citation_source_catalog_from_markdown(
+            prepared.agent_pdf_markdown, citation_dir
+        )
+    parsed_json = inputs.parsed_json
+    if not parsed_json.is_file():
+        parsed_json = citation_dir / "report_parsed.json"
+        _write_json(parsed_json, parse_file(inputs.markdown))
+    if not citation_units.is_file():
+        write_citation_units(parsed_json, citation_units)
+    write_citation_validation_report(citation_units, source_catalog, validation_report)
+    validation = _read_json(validation_report)
+    if not validation.get("verified"):
         raise FinancialReportWorkflowError(
-            "Mandatory citation PDF is missing: " + str(pdf)
+            "Citation validation failed: at least one verified reference is required"
         )
-    if is_markdown:
-        return {"markdown": report, "pdf": pdf, "parsed_json": parsed}
-    return {"pdf": pdf, "parsed_json": parsed}
+    return {
+        "verified": len(validation["verified"]),
+        "excluded_missing": list(validation.get("source_missing", [])),
+        "parsed_json": str(parsed_json),
+    }
 
 
 def _effective_generation_limits(
@@ -423,12 +450,20 @@ async def run_financial_report_workflow(
 ) -> FinancialReportWorkflowResult:
     if resume and overwrite:
         raise FinancialReportWorkflowError("--resume and --overwrite cannot be used together")
-    inputs = _resolve_inputs(markdown_path, pdf_path, parsed_json_path)
+    try:
+        inputs = resolve_financial_report_inputs(
+            markdown_path, pdf_path, parsed_json_path
+        )
+    except ValueError as exc:
+        raise FinancialReportWorkflowError(str(exc)) from exc
     root = Path(output_dir).expanduser().resolve()
     root_existed = root.exists()
     root.mkdir(parents=True, exist_ok=True)
     manifest_path = root / "run_manifest.json"
-    hashes = {name: _sha256(path) for name, path in inputs.items() if path.is_file()}
+    input_paths = inputs.manifest_paths()
+    hashes = {
+        name: _sha256(path) for name, path in input_paths.items() if path.is_file()
+    }
     if resume:
         if not manifest_path.is_file():
             raise FinancialReportWorkflowError("--resume requires an existing run_manifest.json")
@@ -438,10 +473,16 @@ async def run_financial_report_workflow(
     else:
         if root_existed and any(root.iterdir()) and not overwrite:
             raise FinancialReportWorkflowError("Output already contains a run; use --resume or --overwrite")
-        manifest = {"schema_version": "1.0.0", "inputs": {k: str(v) for k, v in inputs.items()}, "input_sha256": hashes, "stages": {}}
+        manifest = {
+            "schema_version": "1.0.0",
+            "mode": inputs.mode.value,
+            "inputs": {key: str(value) for key, value in input_paths.items()},
+            "input_sha256": hashes,
+            "stages": {},
+        }
 
-    research_input = inputs.get("markdown", inputs["pdf"])
-    citations_required = "markdown" in inputs
+    research_input = inputs.research_source
+    citations_required = inputs.citations_required
     limits = _effective_generation_limits(
         research_input,
         max_tokens=max_tokens,
@@ -451,31 +492,114 @@ async def run_financial_report_workflow(
     )
     manifest["generation_limits"] = limits
 
+    preparation_dir = root / "prepared_input"
     research_dir, citation_dir, deck_dir = root / "research", root / "citations", root / "deck"
     if overwrite:
-        for stage_dir in (research_dir, citation_dir, deck_dir):
+        for stage_dir in (preparation_dir, research_dir, citation_dir, deck_dir):
             _safe_reset_stage(stage_dir, root)
     _write_json(manifest_path, manifest)
 
+    prepared = prepared_financial_input_paths(inputs, preparation_dir)
+    prepared_required = [
+        prepared.bundle_directory / "document.json",
+        prepared.bundle_directory / "validation.json",
+    ]
+    if prepared.agent_pdf_markdown is not None:
+        prepared_required.append(prepared.agent_pdf_markdown)
+    if not _stage_passed(manifest, "input_preparation", prepared_required):
+        _mark_running(manifest_path, manifest, "input_preparation")
+        try:
+            prepared = await asyncio.to_thread(
+                prepare_financial_input, inputs, preparation_dir
+            )
+            _mark(
+                manifest_path,
+                manifest,
+                "input_preparation",
+                mode=inputs.mode.value,
+                bundle=str(prepared.bundle_directory),
+                reused_pdf_parse=inputs.citations_required,
+            )
+        except Exception as exc:
+            _mark_failed(manifest_path, manifest, "input_preparation", exc)
+            raise FinancialReportWorkflowError(
+                f"Input preparation stage failed: {exc}"
+            ) from exc
+
     outline = research_dir / "slide_outline.json"
     speaker = research_dir / "speaker_manuscript.json"
-    if not _stage_passed(manifest, "research", [outline, speaker]):
+    research_needed = not _stage_passed(manifest, "research", [outline, speaker])
+    source_catalog = citation_dir / "citation_source_catalog.json"
+    citation_units = citation_dir / "citation_units.json"
+    validation_report = citation_dir / "citation_validation_report.json"
+    citations_needed = citations_required and not _stage_passed(
+        manifest,
+        "citations",
+        [source_catalog, citation_units, validation_report],
+    )
+
+    if not citations_required:
+        _mark(
+            manifest_path,
+            manifest,
+            "citations",
+            skipped=True,
+            reason="direct PDF input does not require citation processing",
+        )
+    if research_needed:
         _mark_running(manifest_path, manifest, "research")
-        try:
-            _, warnings = run_research_pipeline(
-                research_input, research_dir, overwrite=overwrite, model=model,
-                base_url=base_url, api_provider=api_provider,
-                max_tokens=limits["max_tokens"],
-                max_attempts=limits["max_attempts"], timeout=timeout,
-                speaker_max_tokens=limits["speaker_max_tokens"],
-                speaker_max_attempts=limits["speaker_max_attempts"],
-                export_figure_sources=not citations_required,
+    if citations_needed:
+        _mark_running(manifest_path, manifest, "citations")
+
+    parallel_jobs: list[tuple[str, Any]] = []
+    if research_needed:
+        parallel_jobs.append(
+            (
+                "research",
+                asyncio.to_thread(
+                    run_research_pipeline,
+                    prepared.bundle_directory,
+                    research_dir,
+                    overwrite=overwrite,
+                    model=model,
+                    base_url=base_url,
+                    api_provider=api_provider,
+                    max_tokens=limits["max_tokens"],
+                    max_attempts=limits["max_attempts"],
+                    timeout=timeout,
+                    speaker_max_tokens=limits["speaker_max_tokens"],
+                    speaker_max_attempts=limits["speaker_max_attempts"],
+                    export_figure_sources=not citations_required,
+                ),
             )
-            _mark(manifest_path, manifest, "research", warnings=list(warnings))
-        except Exception as exc:
-            _mark_failed(manifest_path, manifest, "research", exc)
+        )
+    if citations_needed:
+        parallel_jobs.append(
+            (
+                "citations",
+                asyncio.to_thread(
+                    _prepare_agent_citations, inputs, prepared, citation_dir
+                ),
+            )
+        )
+    if parallel_jobs:
+        results = await asyncio.gather(
+            *(job for _, job in parallel_jobs), return_exceptions=True
+        )
+        failures: list[tuple[str, Exception]] = []
+        for (stage, _), result in zip(parallel_jobs, results):
+            if isinstance(result, Exception):
+                _mark_failed(manifest_path, manifest, stage, result)
+                failures.append((stage, result))
+            elif stage == "research":
+                _, warnings = result
+                _mark(manifest_path, manifest, stage, warnings=list(warnings))
+            else:
+                _mark(manifest_path, manifest, stage, **result)
+        if failures:
+            stage, exc = failures[0]
             raise FinancialReportWorkflowError(
-                f"Research stage failed: {exc}"
+                f"{stage.title()} stage failed: {exc}"
             ) from exc
 
     finalized_outline = _read_json(outline)
@@ -519,51 +643,6 @@ async def run_financial_report_workflow(
                 "Research outline does not satisfy the title/content/closing contract. "
                 "This legacy run is not safely migratable; regenerate it with --overwrite."
             )
-
-    source_catalog = citation_dir / "citation_source_catalog.json"
-    citation_units = citation_dir / "citation_units.json"
-    validation_report = citation_dir / "citation_validation_report.json"
-    if not citations_required:
-        _mark(
-            manifest_path,
-            manifest,
-            "citations",
-            skipped=True,
-            reason="direct PDF input does not require citation processing",
-        )
-    elif not _stage_passed(manifest, "citations", [source_catalog, citation_units, validation_report]):
-        _mark_running(manifest_path, manifest, "citations")
-        try:
-            if not source_catalog.is_file():
-                parse_pdf_citation_appendix(inputs["pdf"], citation_dir)
-            parsed_json = inputs["parsed_json"]
-            if not parsed_json.is_file():
-                parsed_json = citation_dir / "report_parsed.json"
-                citation_text_source = inputs.get(
-                    "markdown", citation_dir / "mineru_raw" / "document.md"
-                )
-                _write_json(parsed_json, parse_file(citation_text_source))
-            if not citation_units.is_file():
-                write_citation_units(parsed_json, citation_units)
-            write_citation_validation_report(citation_units, source_catalog, validation_report)
-            validation = _read_json(validation_report)
-            if not validation.get("verified"):
-                raise FinancialReportWorkflowError(
-                    "Citation validation failed: at least one verified reference is required"
-                )
-            _mark(
-                manifest_path,
-                manifest,
-                "citations",
-                verified=len(validation["verified"]),
-                excluded_missing=list(validation.get("source_missing", [])),
-                parsed_json=str(parsed_json),
-            )
-        except Exception as exc:
-            _mark_failed(manifest_path, manifest, "citations", exc)
-            raise FinancialReportWorkflowError(
-                f"Citations stage failed: {exc}"
-            ) from exc
 
     receipt = deck_dir / "financial_generation_receipt.json"
     pptx_candidates = list(deck_dir.glob("*.pptx"))

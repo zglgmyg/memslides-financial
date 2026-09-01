@@ -190,9 +190,20 @@ def parse_pdf_citation_appendix(
     with MinerUClient() as client:
         client.parse_to_raw(pdf, raw_directory, data_id or pdf.stem)
 
-    catalog = parse_mineru_appendix(
-        (raw_directory / "document.md").read_text(encoding="utf-8")
+    return write_citation_source_catalog_from_markdown(
+        raw_directory / "document.md", output
     )
+
+
+def write_citation_source_catalog_from_markdown(
+    markdown_path: str | Path,
+    output_directory: str | Path,
+) -> Path:
+    """Write the catalog from an existing MinerU document without parsing again."""
+
+    markdown = Path(markdown_path).resolve()
+    output = Path(output_directory).resolve()
+    catalog = parse_mineru_appendix(markdown.read_text(encoding="utf-8"))
     catalog_path = output / "citation_source_catalog.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text(
