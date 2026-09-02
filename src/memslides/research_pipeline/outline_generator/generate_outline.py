@@ -26,8 +26,10 @@ import json
 import os
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -87,6 +89,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 API_PROVIDERS = ("auto", "deepseek", "siliconflow")
 DEFAULT_DIRECT_PLANNING_MAX_CHARS = 300_000
 SILICONFLOW_DIRECT_PLANNING_MAX_CHARS = 60_000
+
+
+@dataclass(frozen=True)
+class PreparedOutlineContext:
+    """Transient runtime context prepared before Narrative and Outline converge."""
+
+    bundle_directory: Path
+    runtime_memories: tuple[dict[str, Any], ...]
+    input_chars: int
+    direct_planning_max_chars: int
+    context_mode: str
 
 
 class OutlineGenerationError(RuntimeError):
@@ -343,6 +356,7 @@ def generate_context_memories(
                     api_key=api_key,
                     base_url=base_url,
                     timeout=timeout,
+                    stage=f"context_compression:{chunk.id}:attempt_{attempt}",
                 )
                 content = extract_response_content(response)
                 memories.append(parse_context_memory(content, chunk))
@@ -373,6 +387,58 @@ def generate_context_memories(
     return memories
 
 
+def prepare_outline_context(
+    snapshot: DocumentIntelligenceSnapshot,
+    *,
+    api_key: str,
+    base_url: str,
+    timeout: int,
+    model: str,
+    max_attempts: int,
+    api_provider: str = "auto",
+    chunk_chars: int = 30_000,
+    direct_planning_max_chars: int = DEFAULT_DIRECT_PLANNING_MAX_CHARS,
+    compression_max_tokens: int = 4_000,
+    thinking: str = "enabled",
+    reasoning_effort: str = "high",
+) -> PreparedOutlineContext:
+    """Prepare the unchanged runtime memories consumed by Slide Planning."""
+
+    if direct_planning_max_chars < 0:
+        raise OutlineGenerationError("direct_planning_max_chars cannot be negative")
+    provider = resolve_api_provider(api_provider, base_url)
+    chunks = generate_chunks(snapshot, chunk_chars)
+    input_chars = context_input_chars(chunks)
+    effective_limit = effective_direct_planning_max_chars(
+        direct_planning_max_chars,
+        provider,
+    )
+    use_direct_context = effective_limit > 0 and input_chars <= effective_limit
+    memories = (
+        [build_direct_context_memory(chunk) for chunk in chunks]
+        if use_direct_context
+        else generate_context_memories(
+            chunks,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            model=model,
+            max_tokens=compression_max_tokens,
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
+            api_provider=provider,
+            max_attempts=max_attempts,
+        )
+    )
+    return PreparedOutlineContext(
+        bundle_directory=snapshot.bundle_directory.resolve(),
+        runtime_memories=tuple(memories),
+        input_chars=input_chars,
+        direct_planning_max_chars=effective_limit,
+        context_mode="direct" if use_direct_context else "compressed",
+    )
+
+
 def build_request(
     messages: List[Dict[str, str]],
     *,
@@ -394,7 +460,8 @@ def build_request(
         return request
     if api_provider == "deepseek":
         request["response_format"] = {"type": "json_object"}
-        request["stream"] = False
+        request["stream"] = True
+        request["stream_options"] = {"include_usage": True}
         request["thinking"] = {"type": thinking}
         if thinking == "enabled":
             request["reasoning_effort"] = reasoning_effort
@@ -411,7 +478,126 @@ def resolve_api_provider(requested: str, base_url: str) -> str:
     return "deepseek"
 
 
-def call_deepseek(request_body: Mapping[str, Any], *, api_key: str, base_url: str, timeout: int) -> Dict[str, Any]:
+def _stream_response_payload(
+    response: Any, *, started_at: float, stage: str
+) -> Dict[str, Any]:
+    """Reassemble a Chat Completions SSE response and attach phase timings."""
+
+    reasoning_parts: list[str] = []
+    content_parts: list[str] = []
+    first_token_at: float | None = None
+    first_reasoning_at: float | None = None
+    first_content_at: float | None = None
+    finish_reason: str | None = None
+    usage: dict[str, Any] = {}
+    response_metadata: dict[str, Any] = {}
+
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise DeepSeekAPIError(
+                "DeepSeek API stream contains invalid JSON",
+                retryable=True,
+            ) from exc
+        if not isinstance(chunk, dict):
+            continue
+        for key in ("id", "model", "created", "system_fingerprint"):
+            if key in chunk:
+                response_metadata[key] = chunk[key]
+        chunk_usage = chunk.get("usage")
+        if isinstance(chunk_usage, dict):
+            usage = dict(chunk_usage)
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0]
+        if not isinstance(choice, Mapping):
+            continue
+        if choice.get("finish_reason") is not None:
+            finish_reason = str(choice["finish_reason"])
+        delta = choice.get("delta")
+        if not isinstance(delta, Mapping):
+            continue
+        reasoning = delta.get("reasoning_content")
+        content = delta.get("content")
+        now = time.perf_counter()
+        if isinstance(reasoning, str) and reasoning:
+            if first_token_at is None:
+                first_token_at = now
+            if first_reasoning_at is None:
+                first_reasoning_at = now
+            reasoning_parts.append(reasoning)
+        if isinstance(content, str) and content:
+            if first_token_at is None:
+                first_token_at = now
+            if first_content_at is None:
+                first_content_at = now
+            content_parts.append(content)
+
+    completed_at = time.perf_counter()
+    reasoning_tokens = None
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(completion_details, Mapping):
+        reasoning_tokens = completion_details.get("reasoning_tokens")
+    timing = {
+        "stage": stage,
+        "elapsed_seconds": round(completed_at - started_at, 3),
+        "ttft_seconds": (
+            round(first_token_at - started_at, 3)
+            if first_token_at is not None
+            else None
+        ),
+        "thinking_seconds": (
+            round((first_content_at or completed_at) - first_reasoning_at, 3)
+            if first_reasoning_at is not None
+            else 0.0
+        ),
+        "content_seconds": (
+            round(completed_at - first_content_at, 3)
+            if first_content_at is not None
+            else 0.0
+        ),
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": reasoning_tokens,
+        "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+        "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
+        "finish_reason": finish_reason,
+    }
+    print("API_TIMING " + json.dumps(timing, ensure_ascii=False, sort_keys=True))
+    return {
+        **response_metadata,
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": finish_reason,
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "".join(reasoning_parts),
+                    "content": "".join(content_parts),
+                },
+            }
+        ],
+        "usage": usage,
+        "_memslides_timing": timing,
+    }
+
+
+def call_deepseek(
+    request_body: Mapping[str, Any],
+    *,
+    api_key: str,
+    base_url: str,
+    timeout: int,
+    stage: str = "model",
+) -> Dict[str, Any]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
     serialized_payload = json.dumps(request_body, ensure_ascii=False)
     body = serialized_payload.encode("utf-8")
@@ -419,7 +605,8 @@ def call_deepseek(request_body: Mapping[str, Any], *, api_key: str, base_url: st
     message_count = len(messages) if isinstance(messages, list) else 0
     print(
         "Calling model API: "
-        f"url={endpoint}, messages={message_count}, payload_bytes={len(body)}, "
+        f"stage={stage}, url={endpoint}, messages={message_count}, "
+        f"payload_bytes={len(body)}, "
         f"max_tokens={request_body.get('max_tokens')}, "
         f"thinking={request_body.get('extra_body', {}).get('thinking', request_body.get('thinking'))}"
     )
@@ -433,9 +620,35 @@ def call_deepseek(request_body: Mapping[str, Any], *, api_key: str, base_url: st
             "Accept": "application/json",
         },
     )
+    started_at = time.perf_counter()
     try:
         with urllib.request.urlopen(http_request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            if request_body.get("stream") is True:
+                payload = _stream_response_payload(
+                    response,
+                    started_at=started_at,
+                    stage=stage,
+                )
+            else:
+                payload = json.loads(response.read().decode("utf-8"))
+                completed_at = time.perf_counter()
+                usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+                timing = {
+                    "stage": stage,
+                    "elapsed_seconds": round(completed_at - started_at, 3),
+                    "ttft_seconds": None,
+                    "thinking_seconds": None,
+                    "content_seconds": None,
+                    "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, Mapping) else None,
+                    "completion_tokens": usage.get("completion_tokens") if isinstance(usage, Mapping) else None,
+                    "reasoning_tokens": None,
+                    "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens") if isinstance(usage, Mapping) else None,
+                    "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens") if isinstance(usage, Mapping) else None,
+                    "finish_reason": None,
+                }
+                print("API_TIMING " + json.dumps(timing, ensure_ascii=False, sort_keys=True))
+                if isinstance(payload, dict):
+                    payload["_memslides_timing"] = timing
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise DeepSeekAPIError(
@@ -564,6 +777,44 @@ def build_truncation_retry_messages(
     ]
 
 
+def build_truncation_continuation_request(
+    original_messages: Sequence[Mapping[str, str]],
+    partial_content: str,
+    *,
+    model: str,
+    max_tokens: int,
+) -> Dict[str, Any]:
+    """Continue the exact JSON prefix without regenerating completed content."""
+
+    request = build_request(
+        [
+            *[dict(message) for message in original_messages],
+            {
+                "role": "assistant",
+                "content": partial_content,
+                "prefix": True,
+            },
+        ],
+        model=model,
+        max_tokens=max_tokens,
+        thinking="disabled",
+        reasoning_effort="high",
+        api_provider="deepseek",
+    )
+    # DeepSeek's beta prefix-completion endpoint rejects JSON mode. The
+    # existing assistant prefix already constrains the combined result to the
+    # JSON object started by the original response.
+    request.pop("response_format", None)
+    return request
+
+
+def deepseek_beta_base_url(base_url: str) -> str:
+    """Select the official endpoint required by Chat Prefix Completion."""
+
+    normalized = base_url.rstrip("/")
+    return normalized if normalized.endswith("/beta") else normalized + "/beta"
+
+
 def generate_with_retries(
     messages: List[Dict[str, str]],
     schema: Mapping[str, Any],
@@ -603,6 +854,7 @@ def generate_with_retries(
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
+                stage=f"outline:attempt_{attempt}",
             )
             content = extract_response_content(response)
             outline = parse_outline_content(content)
@@ -622,15 +874,64 @@ def generate_with_retries(
             attempt_messages = list(messages)
         except OutlineResponseError as exc:
             last_error = exc
-            if not exc.retryable or attempt >= max_attempts:
+            if not exc.retryable:
                 raise
             if exc.truncated:
+                if api_provider == "deepseek" and exc.content.strip():
+                    try:
+                        continuation = call_deepseek(
+                            build_truncation_continuation_request(
+                                messages,
+                                exc.content,
+                                model=model,
+                                max_tokens=expanded_retry_token_budget(max_tokens),
+                            ),
+                            api_key=api_key,
+                            base_url=deepseek_beta_base_url(base_url),
+                            timeout=timeout,
+                            stage=f"outline_continuation:after_attempt_{attempt}",
+                        )
+                        continued_content = extract_response_content(continuation)
+                        merged_content = exc.content + continued_content
+                        outline = parse_outline_content(merged_content)
+                        if postprocess_outline is not None:
+                            postprocess_outline(outline)
+                        issues = (
+                            validate_outline_data(outline, schema)
+                            if validate_output
+                            else []
+                        )
+                        if validate_output and additional_validator is not None:
+                            issues.extend(additional_validator(outline))
+                        errors = [
+                            issue for issue in issues if issue.severity == "error"
+                        ]
+                        if errors:
+                            raise OutlineValidationError(
+                                issues,
+                                content=merged_content,
+                            )
+                        print("Recovered truncated model output by prefix continuation")
+                        return outline, issues, attempt
+                    except (
+                        DeepSeekAPIError,
+                        OutlineResponseError,
+                        OutlineValidationError,
+                    ) as continuation_error:
+                        print(
+                            "Prefix continuation failed; falling back to complete "
+                            f"regeneration: {continuation_error}"
+                        )
+                if attempt >= max_attempts:
+                    raise
                 attempt_messages = build_truncation_retry_messages(messages)
                 attempt_thinking = "disabled"
                 attempt_max_tokens = expanded_retry_token_budget(
                     attempt_max_tokens
                 )
             else:
+                if attempt >= max_attempts:
+                    raise
                 attempt_messages = build_correction_messages(
                     messages,
                     previous_content=exc.content,
@@ -721,9 +1022,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--max-attempts",
         type=int,
         default=2,
-        help="Maximum API attempts for retryable response/API failures (default: 2)",
+        help=(
+            "Maximum complete-generation attempts for retryable failures; a truncated "
+            "DeepSeek response may add one prefix-continuation call (default: 2)"
+        ),
     )
-    parser.add_argument("--thinking", choices=["enabled", "disabled"], default="enabled")
+    parser.add_argument("--thinking", choices=["enabled", "disabled"], default="disabled")
     parser.add_argument("--reasoning-effort", choices=["low", "medium", "high", "max"], default="high")
     parser.add_argument("--dry-run", action="store_true", help="Build request JSON without calling DeepSeek")
     parser.add_argument(
@@ -735,7 +1039,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    prepared_context: PreparedOutlineContext | None = None,
+) -> int:
     args = parse_args(argv)
     output = args.output or Path("output/outlines") / f"{args.input.stem}_outline.json"
 
@@ -746,19 +1054,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise OutlineGenerationError("--direct-planning-max-chars cannot be negative")
         if args.request_output and not args.dry_run:
             raise OutlineGenerationError("--request-output is only allowed with --dry-run")
+        if args.dry_run and prepared_context is not None:
+            raise OutlineGenerationError("prepared context is not accepted in --dry-run mode")
         api_provider = resolve_api_provider(args.api_provider, args.base_url)
         snapshot = load_document_intelligence(args.input, args.bundle_schema)
-        chunks = generate_chunks(snapshot, args.chunk_chars)
-        input_chars = context_input_chars(chunks)
-        direct_planning_max_chars = effective_direct_planning_max_chars(
-            args.direct_planning_max_chars,
-            api_provider,
-        )
-        use_direct_context = (
-            direct_planning_max_chars > 0
-            and input_chars <= direct_planning_max_chars
-        )
-        context_mode = "direct" if use_direct_context else "compressed"
         schema = load_json(args.schema, "Outline schema")
         narrative_schema = load_json(
             PROJECT_ROOT / "schemas" / "narrative_plan.schema.json",
@@ -796,6 +1095,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             print(f"Created selected-case trace: {args.case_trace_output}")
         if args.dry_run:
+            chunks = generate_chunks(snapshot, args.chunk_chars)
+            input_chars = context_input_chars(chunks)
+            direct_planning_max_chars = effective_direct_planning_max_chars(
+                args.direct_planning_max_chars,
+                api_provider,
+            )
+            use_direct_context = (
+                direct_planning_max_chars > 0
+                and input_chars <= direct_planning_max_chars
+            )
+            context_mode = "direct" if use_direct_context else "compressed"
             preview_memories = [
                 build_direct_context_memory(chunk)
                 if use_direct_context
@@ -861,22 +1171,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             raise OutlineGenerationError("DEEPSEEK_API_KEY is not set")
-        runtime_memories = (
-            [build_direct_context_memory(chunk) for chunk in chunks]
-            if use_direct_context
-            else generate_context_memories(
-                chunks,
+        if prepared_context is None:
+            prepared_context = prepare_outline_context(
+                snapshot,
                 api_key=api_key,
                 base_url=args.base_url,
                 timeout=args.timeout,
                 model=args.model,
-                max_tokens=args.compression_max_tokens,
+                max_attempts=args.max_attempts,
+                api_provider=api_provider,
+                chunk_chars=args.chunk_chars,
+                direct_planning_max_chars=args.direct_planning_max_chars,
+                compression_max_tokens=args.compression_max_tokens,
                 thinking=args.thinking,
                 reasoning_effort=args.reasoning_effort,
-                api_provider=api_provider,
-                max_attempts=args.max_attempts,
             )
-        )
+        elif prepared_context.bundle_directory != snapshot.bundle_directory.resolve():
+            raise OutlineGenerationError(
+                "prepared context belongs to a different DocumentBundle"
+            )
+        runtime_memories = list(prepared_context.runtime_memories)
+        input_chars = prepared_context.input_chars
+        direct_planning_max_chars = prepared_context.direct_planning_max_chars
+        context_mode = prepared_context.context_mode
         allowed_runtime_evidence = {
             (str(ref.get("kind")), str(ref.get("id")))
             for memory in runtime_memories

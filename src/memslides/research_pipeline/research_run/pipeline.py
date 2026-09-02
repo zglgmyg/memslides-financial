@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -17,7 +18,11 @@ from memslides.research_pipeline.document_bundle.markdown import build_from_mark
 from memslides.research_pipeline.document_bundle.parser.mineru_client import MinerUClient
 from memslides.research_pipeline.document_intelligence import load_document_intelligence
 from memslides.research_pipeline.narrative_plan import generate_narrative_plan
-from memslides.research_pipeline.outline_generator.generate_outline import main as generate_outline_main
+from memslides.research_pipeline.outline_generator.generate_outline import (
+    PreparedOutlineContext,
+    main as generate_outline_main,
+    prepare_outline_context,
+)
 from memslides.research_pipeline.visualization_generator.audit import audit_visualization_artifacts
 from memslides.research_pipeline.visualization_generator.generate_visualizations import generate_visualizations
 from memslides.research_pipeline.visualization_generator.numeric_facts import build_numeric_fact_ledger
@@ -116,6 +121,7 @@ def _materialize_outline(
     max_attempts: int | None,
     timeout: int | None,
     narrative_plan_path: Path,
+    prepared_context: PreparedOutlineContext,
 ) -> dict[str, Any]:
     outline_path = working_directory / "slide_outline.json"
     forwarded = [str(bundle_directory), "-o", str(outline_path)]
@@ -130,7 +136,10 @@ def _materialize_outline(
     ):
         if value is not None:
             forwarded.extend([option, str(value)])
-    exit_code = generate_outline_main(forwarded)
+    exit_code = generate_outline_main(
+        forwarded,
+        prepared_context=prepared_context,
+    )
     if exit_code != 0 or not outline_path.is_file():
         raise ResearchRunPipelineError(
             f"Outline generation exited with status {exit_code}"
@@ -170,6 +179,70 @@ def _materialize_narrative_plan(
         encoding="utf-8",
     )
     return plan, plan_path
+
+
+def _prepare_outline_runtime_context(
+    *,
+    snapshot: Any,
+    model: str | None,
+    base_url: str | None,
+    api_provider: str | None,
+    max_attempts: int | None,
+    timeout: int | None,
+) -> PreparedOutlineContext:
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ResearchRunPipelineError("DEEPSEEK_API_KEY is not set")
+    return prepare_outline_context(
+        snapshot,
+        api_key=api_key,
+        model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+        base_url=base_url
+        or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        api_provider=api_provider
+        or os.getenv("DEEPSEEK_API_PROVIDER", "auto"),
+        max_attempts=max_attempts or 2,
+        timeout=timeout or 300,
+    )
+
+
+def _prepare_narrative_and_outline_context(
+    *,
+    snapshot: Any,
+    working_directory: Path,
+    model: str | None,
+    base_url: str | None,
+    api_provider: str | None,
+    max_tokens: int | None,
+    max_attempts: int | None,
+    timeout: int | None,
+) -> tuple[dict[str, Any], Path, PreparedOutlineContext]:
+    """Run the two independent prerequisites and join before Slide Planning."""
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        narrative_future = executor.submit(
+            _materialize_narrative_plan,
+            snapshot=snapshot,
+            working_directory=working_directory,
+            model=model,
+            base_url=base_url,
+            api_provider=api_provider,
+            max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            timeout=timeout,
+        )
+        context_future = executor.submit(
+            _prepare_outline_runtime_context,
+            snapshot=snapshot,
+            model=model,
+            base_url=base_url,
+            api_provider=api_provider,
+            max_attempts=max_attempts,
+            timeout=timeout,
+        )
+        narrative_plan, narrative_plan_path = narrative_future.result()
+        prepared_context = context_future.result()
+    return narrative_plan, narrative_plan_path, prepared_context
 
 
 def _materialize_speaker_manuscript(
@@ -282,7 +355,11 @@ def run_research_pipeline(
             bundle_directory,
             PROJECT_ROOT / "schemas" / "document_bundle.schema.json",
         )
-        narrative_plan, narrative_plan_path = _materialize_narrative_plan(
+        (
+            narrative_plan,
+            narrative_plan_path,
+            prepared_context,
+        ) = _prepare_narrative_and_outline_context(
             snapshot=snapshot,
             working_directory=temporary_root,
             model=model,
@@ -302,6 +379,7 @@ def run_research_pipeline(
             max_attempts=max_attempts,
             timeout=timeout,
             narrative_plan_path=narrative_plan_path,
+            prepared_context=prepared_context,
         )
         artifacts, issues = generate_visualizations(
             outline,

@@ -43,6 +43,249 @@ def test_incomplete_http_response_is_retryable(monkeypatch: pytest.MonkeyPatch) 
     assert "interrupted" in str(captured.value)
 
 
+def test_streamed_response_records_phase_and_cache_timings(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def __iter__(self):
+            chunks = [
+                {"choices": [{"delta": {"reasoning_content": "plan"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "{\"ok\":"}, "finish_reason": None}]},
+                {
+                    "choices": [{"delta": {"content": "true}"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 12,
+                        "prompt_cache_hit_tokens": 64,
+                        "prompt_cache_miss_tokens": 36,
+                        "completion_tokens_details": {"reasoning_tokens": 4},
+                    },
+                },
+            ]
+            return iter(
+                [f"data: {json.dumps(chunk)}\n".encode() for chunk in chunks]
+                + [b"data: [DONE]\n"]
+            )
+
+    ticks = iter([10.0, 11.0, 13.0, 15.0, 16.0])
+    monkeypatch.setattr(generate_outline.time, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(
+        generate_outline.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    response = generate_outline.call_deepseek(
+        {"messages": [], "stream": True},
+        api_key="test-key",
+        base_url="https://example.invalid",
+        timeout=1,
+    )
+
+    assert response["choices"][0]["message"]["reasoning_content"] == "plan"
+    assert response["choices"][0]["message"]["content"] == '{"ok":true}'
+    assert response["choices"][0]["finish_reason"] == "stop"
+    assert response["_memslides_timing"] == {
+        "stage": "model",
+        "elapsed_seconds": 6.0,
+        "ttft_seconds": 1.0,
+        "thinking_seconds": 2.0,
+        "content_seconds": 3.0,
+        "prompt_tokens": 100,
+        "completion_tokens": 12,
+        "reasoning_tokens": 4,
+        "prompt_cache_hit_tokens": 64,
+        "prompt_cache_miss_tokens": 36,
+        "finish_reason": "stop",
+    }
+    assert "API_TIMING" in capsys.readouterr().out
+
+
+def test_deepseek_request_enables_usage_stream_for_phase_timing() -> None:
+    request = generate_outline.build_request(
+        [{"role": "user", "content": "return JSON"}],
+        model="deepseek-v4-pro",
+        max_tokens=100,
+        thinking="enabled",
+        reasoning_effort="high",
+        api_provider="deepseek",
+    )
+
+    assert request["stream"] is True
+    assert request["stream_options"] == {"include_usage": True}
+
+
+def test_outline_cli_disables_thinking_by_default() -> None:
+    args = generate_outline.parse_args(
+        ["document_bundle", "--narrative-plan", "narrative_plan.json"]
+    )
+
+    assert args.thinking == "disabled"
+
+
+def _api_response(content: str, finish_reason: str = "stop") -> dict[str, object]:
+    return {
+        "choices": [
+            {
+                "finish_reason": finish_reason,
+                "message": {"content": content},
+            }
+        ]
+    }
+
+
+def test_truncated_outline_uses_prefix_continuation_before_regeneration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            _api_response('{"slides":[', "length"),
+            _api_response("]}"),
+        ]
+    )
+    calls: list[tuple[dict[str, object], str]] = []
+
+    def fake_call(
+        request: dict[str, object],
+        *,
+        api_key: str,
+        base_url: str,
+        timeout: int,
+        stage: str,
+    ) -> dict[str, object]:
+        calls.append((request, base_url))
+        return next(responses)
+
+    monkeypatch.setattr(generate_outline, "call_deepseek", fake_call)
+
+    outline, issues, attempts = generate_outline.generate_with_retries(
+        [{"role": "user", "content": "return an outline"}],
+        {},
+        api_key="key",
+        base_url="https://api.deepseek.com",
+        timeout=30,
+        model="deepseek-v4-pro",
+        max_tokens=16_000,
+        thinking="enabled",
+        reasoning_effort="high",
+        max_attempts=1,
+        api_provider="deepseek",
+        validate_output=False,
+    )
+
+    assert outline == {"slides": []}
+    assert issues == []
+    assert attempts == 1
+    continuation_request, continuation_url = calls[1]
+    assert continuation_url == "https://api.deepseek.com/beta"
+    assert continuation_request["thinking"] == {"type": "disabled"}
+    assert "response_format" not in continuation_request
+    assert continuation_request["messages"][-1] == {
+        "role": "assistant",
+        "content": '{"slides":[',
+        "prefix": True,
+    }
+
+
+def test_failed_prefix_continuation_keeps_complete_retry_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            _api_response('{"slides":[', "length"),
+            _api_response("not a JSON suffix"),
+            _api_response('{"slides":[]}'),
+        ]
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_call(
+        request: dict[str, object],
+        *,
+        api_key: str,
+        base_url: str,
+        timeout: int,
+        stage: str,
+    ) -> dict[str, object]:
+        calls.append(request)
+        return next(responses)
+
+    monkeypatch.setattr(generate_outline, "call_deepseek", fake_call)
+
+    outline, _, attempts = generate_outline.generate_with_retries(
+        [{"role": "user", "content": "return an outline"}],
+        {},
+        api_key="key",
+        base_url="https://api.deepseek.com",
+        timeout=30,
+        model="deepseek-v4-pro",
+        max_tokens=16_000,
+        thinking="enabled",
+        reasoning_effort="high",
+        max_attempts=2,
+        api_provider="deepseek",
+        validate_output=False,
+    )
+
+    assert outline == {"slides": []}
+    assert attempts == 2
+    assert len(calls) == 3
+    assert calls[2]["thinking"] == {"type": "disabled"}
+    assert "previous response reached" in calls[2]["messages"][-1]["content"]
+
+
+def test_truncation_without_json_content_skips_prefix_and_uses_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            _api_response("", "length"),
+            _api_response('{"slides":[]}'),
+        ]
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_call(
+        request: dict[str, object],
+        *,
+        api_key: str,
+        base_url: str,
+        timeout: int,
+        stage: str,
+    ) -> dict[str, object]:
+        calls.append(request)
+        return next(responses)
+
+    monkeypatch.setattr(generate_outline, "call_deepseek", fake_call)
+
+    outline, _, attempts = generate_outline.generate_with_retries(
+        [{"role": "user", "content": "return an outline"}],
+        {},
+        api_key="key",
+        base_url="https://api.deepseek.com",
+        timeout=30,
+        model="deepseek-v4-pro",
+        max_tokens=16_000,
+        thinking="enabled",
+        reasoning_effort="high",
+        max_attempts=2,
+        api_provider="deepseek",
+        validate_output=False,
+    )
+
+    assert outline == {"slides": []}
+    assert attempts == 2
+    assert len(calls) == 2
+    assert calls[1]["thinking"] == {"type": "disabled"}
+
+
 def test_outline_postprocessing_adds_one_terminal_closing_slide() -> None:
     outline = {
         "slides": [
@@ -323,6 +566,71 @@ def _hybrid_figure_snapshot(tmp_path: Path) -> DocumentIntelligenceSnapshot:
         block_table_ids={},
         block_figure_ids={},
     )
+
+
+def test_prepare_outline_context_preserves_direct_runtime_memories(
+    tmp_path: Path,
+) -> None:
+    snapshot = _hybrid_figure_snapshot(tmp_path)
+    chunks = generate_outline.generate_chunks(snapshot, 30_000)
+    expected = tuple(
+        generate_outline.build_direct_context_memory(chunk) for chunk in chunks
+    )
+
+    prepared = generate_outline.prepare_outline_context(
+        snapshot,
+        api_key="unused-for-direct-context",
+        base_url="https://api.deepseek.com",
+        timeout=300,
+        model="deepseek-v4-pro",
+        max_attempts=4,
+    )
+
+    assert prepared.context_mode == "direct"
+    assert prepared.runtime_memories == expected
+    assert prepared.bundle_directory == tmp_path.resolve()
+
+
+def test_prepare_outline_context_preserves_compression_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _hybrid_figure_snapshot(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_generate(chunks: object, **kwargs: object) -> list[dict[str, object]]:
+        captured["chunks"] = chunks
+        captured.update(kwargs)
+        return [{"chunk_id": "prepared", "evidence_refs": []}]
+
+    monkeypatch.setattr(
+        generate_outline,
+        "generate_context_memories",
+        fake_generate,
+    )
+
+    prepared = generate_outline.prepare_outline_context(
+        snapshot,
+        api_key="key",
+        base_url="https://api.deepseek.com",
+        timeout=321,
+        model="deepseek-v4-pro",
+        max_attempts=4,
+        direct_planning_max_chars=0,
+        compression_max_tokens=4_000,
+        thinking="enabled",
+        reasoning_effort="high",
+    )
+
+    assert prepared.context_mode == "compressed"
+    assert prepared.runtime_memories == (
+        {"chunk_id": "prepared", "evidence_refs": []},
+    )
+    assert captured["api_key"] == "key"
+    assert captured["max_tokens"] == 4_000
+    assert captured["thinking"] == "enabled"
+    assert captured["reasoning_effort"] == "high"
+    assert captured["max_attempts"] == 4
 
 
 def test_figure_page_compaction_pairs_images_and_caps_standalone_pages(

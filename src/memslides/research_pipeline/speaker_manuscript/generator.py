@@ -243,6 +243,7 @@ def generate_speaker_manuscript(
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
+                stage=f"speaker:attempt_{attempt}",
             )
             content = extract_response_content(response)
             manuscript = parse_outline_content(content)

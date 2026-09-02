@@ -202,6 +202,7 @@ def generate_narrative_plan(
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
+                stage=f"narrative:attempt_{attempt}",
             )
             content = extract_response_content(response)
             plan = parse_outline_content(content)
