@@ -120,6 +120,85 @@ def test_chart_keeps_short_title_inside_canvas(tmp_path: Path, monkeypatch) -> N
     assert short_title in Path(result["svg_path"]).read_text(encoding="utf-8")
 
 
+def test_chart_spec_uses_audience_labels_and_financial_defaults() -> None:
+    spec = sv.build_chart_spec(
+        chart_type="line",
+        source_rows=[
+            {"category": "2023A", "收入": 29136},
+            {"category": "2024A", "收入": 32983},
+            {"category": "2025E", "收入": 51494},
+        ],
+        x_field="category",
+        y_fields=["收入"],
+        x_label="期间",
+        y_label="百万元",
+    )
+
+    assert spec["encoding"]["x"]["title"] == "期间"
+    assert spec["encoding"]["x"]["sort"] == ["2023A", "2024A", "2025E"]
+    assert spec["encoding"]["y"]["title"] == "百万元"
+    assert spec["encoding"]["y"]["scale"] == {"zero": False}
+    assert spec["encoding"]["y"]["axis"]["format"] == ",.0f"
+    assert spec["mark"]["strokeWidth"] == 3
+    assert "line" not in spec["mark"]
+
+
+def test_chart_spec_hides_internal_field_names() -> None:
+    spec = sv.build_chart_spec(
+        chart_type="grouped_bar",
+        source_rows=[
+            {"category": "A", "收入": 10, "利润": 2},
+            {"category": "B", "收入": 12, "利润": 3},
+        ],
+        x_field="category",
+        y_fields=["收入", "利润"],
+    )
+
+    assert spec["encoding"]["x"]["title"] is None
+    assert spec["encoding"]["y"]["title"] is None
+    assert spec["encoding"]["color"]["legend"]["title"] is None
+    tooltip_titles = [item["title"] for item in spec["encoding"]["tooltip"]]
+    assert tooltip_titles == ["类别", "数值", "系列"]
+
+
+def test_bar_chart_uses_horizontal_layout_for_long_category_labels() -> None:
+    spec = sv.build_chart_spec(
+        chart_type="bar",
+        source_rows=[
+            {"category": "内蒙古项目新增烯烃产能", "产能": 300},
+            {"category": "宁东基地现有烯烃产能", "产能": 220},
+        ],
+        x_field="category",
+        y_fields=["产能"],
+        x_label="项目",
+        y_label="万吨/年",
+    )
+
+    assert spec["encoding"]["x"]["field"] == "产能"
+    assert spec["encoding"]["x"]["scale"] == {"zero": True}
+    assert spec["encoding"]["y"]["field"] == "category"
+    assert spec["encoding"]["y"]["axis"]["labelLimit"] == 260
+
+
+def test_pie_chart_adds_readable_value_labels() -> None:
+    spec = sv.build_chart_spec(
+        chart_type="pie",
+        source_rows=[
+            {"业务": "烯烃", "占比": 62},
+            {"业务": "焦炭", "占比": 23},
+            {"业务": "精细化工", "占比": 15},
+        ],
+        x_field="业务",
+        y_fields=["占比"],
+        y_label="%",
+    )
+
+    assert "encoding" not in spec
+    assert spec["layer"][0]["mark"]["strokeWidth"] == 2
+    assert spec["layer"][1]["encoding"]["text"]["field"] == "__display_value__"
+    assert spec["layer"][1]["transform"][0]["calculate"].endswith("+ '%'")
+
+
 def test_render_table_asset_accepts_aliases_and_routes_chart_like_calls(tmp_path: Path, monkeypatch) -> None:
     from memslides.tools import asset_services
 

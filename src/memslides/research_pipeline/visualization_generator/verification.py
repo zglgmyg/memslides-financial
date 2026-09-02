@@ -17,6 +17,7 @@ from .numeric_facts import (
     table_grid,
 )
 from .planning import VisualizationPlan
+from .metric_semantics import metric_keys
 
 
 class VisualizationVerificationError(ValueError):
@@ -66,6 +67,40 @@ def _resolve_facts(
             )
         resolved_series.append(resolved)
     return resolved_series, flattened
+
+
+def _validate_chart_presentation(
+    plan: VisualizationPlan,
+    metric_group: MetricGroup,
+    values_by_series: Sequence[Sequence[int | float]],
+) -> None:
+    """Reject charts that are numerically valid but misleading or unreadable."""
+    flattened = [float(value) for series in values_by_series for value in series]
+    if metric_group.measure_kind in {"ratio", "share"} and any(
+        value < 0 or value > 100 for value in flattened
+    ):
+        raise VisualizationVerificationError(
+            "reject.invalid_percentage_scale: ratio/share values must stay between 0 and 100"
+        )
+
+    if len(values_by_series) > 1:
+        typical = []
+        for series in values_by_series:
+            magnitudes = sorted(abs(float(value)) for value in series if float(value) != 0)
+            if magnitudes:
+                typical.append(magnitudes[len(magnitudes) // 2])
+        if len(typical) > 1 and min(typical) > 0 and max(typical) / min(typical) > 20:
+            raise VisualizationVerificationError(
+                "reject.incompatible_display_scale: series cannot share one readable axis"
+            )
+
+    purpose = " ".join([plan.purpose, *plan.data_requirement.values()])
+    if "风险" in purpose:
+        requested_metrics = set(metric_keys(purpose))
+        if not requested_metrics or metric_group.metric_key not in requested_metrics:
+            raise VisualizationVerificationError(
+                "reject.purpose_metric_mismatch: risk chart does not quantify the named risk"
+            )
 
 
 def assemble_verified_chart(
@@ -129,6 +164,7 @@ def assemble_verified_chart(
         [_json_number(fact.normalized_value) for fact in series]
         for series in resolved_series
     ]
+    _validate_chart_presentation(plan, metric_group, values_by_series)
     category_count = len(proposal.category_labels)
     if proposal.chart_type == "line":
         if category_count < 4 or any(

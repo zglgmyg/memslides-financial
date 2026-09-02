@@ -510,6 +510,43 @@ def _infer_vega_type(values: list[Any]) -> str:
     return "nominal"
 
 
+def _audience_axis_title(field: str, label: str) -> str | None:
+    """Never expose renderer-only field names to the slide audience."""
+    explicit = str(label or "").strip()
+    if explicit:
+        return explicit
+    candidate = str(field or "").strip()
+    if not candidate or candidate == "category" or candidate.startswith("__"):
+        return None
+    return candidate
+
+
+def _quantitative_axis(unit: str, values: list[Any], *, zero: bool) -> dict[str, Any]:
+    numeric = [
+        float(value)
+        for value in values
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    ]
+    axis: dict[str, Any] = {}
+    if str(unit or "").strip() == "%":
+        axis["labelExpr"] = "datum.label + '%'"
+    elif numeric:
+        axis["format"] = ",.0f" if max(abs(value) for value in numeric) >= 100 else ",.1f"
+    return {"axis": axis, "scale": {"zero": zero}}
+
+
+def _nominal_axis(field: str, values: list[Any]) -> dict[str, Any]:
+    order = list(dict.fromkeys(value for value in values if value not in {"", None}))
+    return {
+        "sort": order,
+        "axis": {
+            "labelLimit": 180,
+            "labelOverlap": "parity",
+            "labelAngle": 0,
+        },
+    }
+
+
 def _prepare_chart_dataset(
     *,
     chart_type: str,
@@ -585,6 +622,10 @@ def build_chart_spec(
     )
     x_type = _infer_vega_type([row.get(resolved_x_field) for row in dataset])
     y_type = _infer_vega_type([row.get(resolved_y_field) for row in dataset])
+    x_values = [row.get(resolved_x_field) for row in dataset]
+    y_values = [row.get(resolved_y_field) for row in dataset]
+    x_title = _audience_axis_title(resolved_x_field, x_label)
+    y_title = _audience_axis_title(resolved_y_field, y_label)
     canvas_title = _chart_canvas_text(title)
     canvas_subtitle = _chart_canvas_text(subtitle)
     canvas_note = _chart_canvas_text(note)
@@ -626,8 +667,12 @@ def build_chart_spec(
                 "titleColor": theme.get("text_color", "#0f172a"),
                 "grid": bool(theme.get("show_grid", True)),
                 "gridColor": theme.get("border_color", "#cbd5e1"),
-                "domainColor": theme.get("border_color", "#cbd5e1"),
+                "gridOpacity": 0.55,
+                "domain": False,
                 "tickColor": theme.get("border_color", "#cbd5e1"),
+                "tickSize": 4,
+                "labelPadding": 8,
+                "titlePadding": 12,
             },
             "legend": {
                 "labelFont": theme.get("font_family", DEFAULT_FONT_STACK),
@@ -637,6 +682,9 @@ def build_chart_spec(
                 "titleFontSize": theme.get("caption_size", 13),
                 "titleColor": theme.get("text_color", "#0f172a"),
                 "disable": not bool(theme.get("show_legend", True)),
+                "orient": "top",
+                "direction": "horizontal",
+                "title": None,
             },
             "range": {
                 "category": list(theme.get("color_scheme") or []),
@@ -648,48 +696,88 @@ def build_chart_spec(
 
     base_encode: dict[str, Any] = {
         "tooltip": [
-            {"field": resolved_x_field, "title": x_label or resolved_x_field},
-            {"field": resolved_y_field, "title": y_label or resolved_y_field},
+            {"field": resolved_x_field, "title": x_title or "类别"},
+            {"field": resolved_y_field, "title": y_title or "数值"},
         ]
     }
     if resolved_series_field:
-        base_encode["tooltip"].append({"field": resolved_series_field, "title": resolved_series_field})
+        base_encode["tooltip"].append({"field": resolved_series_field, "title": "系列"})
+
+    x_encoding: dict[str, Any] = {
+        "field": resolved_x_field,
+        "type": x_type,
+        "title": x_title,
+    }
+    if x_type == "nominal":
+        x_encoding.update(_nominal_axis(resolved_x_field, x_values))
+
+    y_encoding: dict[str, Any] = {
+        "field": resolved_y_field,
+        "type": y_type,
+        "title": y_title,
+    }
+    if y_type == "quantitative":
+        y_encoding.update(
+            _quantitative_axis(y_label, y_values, zero=chart_kind in {"bar", "grouped_bar", "stacked_bar", "area"})
+        )
 
     if chart_kind in {"line", "area", "scatter"}:
         spec["mark"] = {
             "type": "line" if chart_kind == "line" else "area" if chart_kind == "area" else "point",
-            "line": chart_kind == "scatter",
-            "point": chart_kind in {"line", "area"},
+            "point": {"filled": True, "size": 70} if chart_kind in {"line", "area"} else False,
             "filled": chart_kind == "scatter",
             "opacity": 0.85 if chart_kind == "area" else 1,
+            "strokeWidth": 3 if chart_kind == "line" else 2,
         }
         encode = {
             **base_encode,
-            "x": {"field": resolved_x_field, "type": x_type, "title": x_label or resolved_x_field},
-            "y": {"field": resolved_y_field, "type": y_type, "title": y_label or resolved_y_field},
+            "x": x_encoding,
+            "y": y_encoding,
         }
         if resolved_series_field:
-            encode["color"] = {"field": resolved_series_field, "type": "nominal", "legend": None if not theme.get("show_legend", True) else {}}
+            encode["color"] = {"field": resolved_series_field, "type": "nominal", "legend": None if not theme.get("show_legend", True) else {"title": None}}
         spec["encoding"] = encode
         return spec
 
     if chart_kind in {"bar", "grouped_bar", "stacked_bar"}:
-        spec["mark"] = {"type": "bar", "cornerRadiusTopLeft": 3, "cornerRadiusTopRight": 3}
-        encode = {
-            **base_encode,
-            "x": {"field": resolved_x_field, "type": x_type, "title": x_label or resolved_x_field},
-            "y": {"field": resolved_y_field, "type": "quantitative", "title": y_label or resolved_y_field},
+        horizontal = x_type == "nominal" and any(
+            _display_width(value) > 12 for value in x_values
+        )
+        spec["mark"] = (
+            {"type": "bar", "cornerRadiusTopRight": 4, "cornerRadiusBottomRight": 4}
+            if horizontal
+            else {"type": "bar", "cornerRadiusTopLeft": 4, "cornerRadiusTopRight": 4}
+        )
+        quantitative = {
+            **y_encoding,
+            "type": "quantitative",
+            **_quantitative_axis(y_label, y_values, zero=True),
         }
+        encode = {**base_encode}
+        if horizontal:
+            encode["x"] = quantitative
+            encode["y"] = {
+                **x_encoding,
+                "axis": {
+                    **x_encoding.get("axis", {}),
+                    "labelLimit": 260,
+                },
+            }
+        else:
+            encode["x"] = x_encoding
+            encode["y"] = quantitative
         if resolved_series_field:
-            encode["color"] = {"field": resolved_series_field, "type": "nominal", "legend": None if not theme.get("show_legend", True) else {}}
+            encode["color"] = {"field": resolved_series_field, "type": "nominal", "legend": None if not theme.get("show_legend", True) else {"title": None}}
         if chart_kind == "grouped_bar" and resolved_series_field:
-            encode["xOffset"] = {"field": resolved_series_field}
+            encode["yOffset" if horizontal else "xOffset"] = {"field": resolved_series_field}
         spec["encoding"] = encode
         return spec
 
-    spec["mark"] = {
+    arc_mark = {
         "type": "arc",
         "innerRadius": 80 if chart_kind == "donut" else 0,
+        "stroke": theme.get("background_color", "#ffffff"),
+        "strokeWidth": 2,
     }
     encode = {
         **base_encode,
@@ -697,10 +785,52 @@ def build_chart_spec(
         "color": {
             "field": resolved_x_field if not resolved_series_field else resolved_series_field,
             "type": "nominal",
-            "legend": None if not theme.get("show_legend", True) else {},
+            "legend": None if not theme.get("show_legend", True) else {"title": None},
         },
     }
-    spec["encoding"] = encode
+    value_text: dict[str, Any] = {
+        "field": resolved_y_field,
+        "type": "quantitative",
+        "format": ".1f"
+        if any(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and float(value) % 1
+            for value in y_values
+        )
+        else ".0f",
+    }
+    text_layer: dict[str, Any] = {
+        "mark": {
+            "type": "text",
+            "radius": 150 if chart_kind == "donut" else 175,
+            "font": theme.get("font_family", DEFAULT_FONT_STACK),
+            "fontSize": theme.get("body_size", 16),
+            "fontWeight": 700,
+            "fill": theme.get("inverse_text_color", "#ffffff"),
+        },
+        "encoding": {
+            "theta": {"field": resolved_y_field, "type": "quantitative"},
+            "detail": {"field": resolved_x_field, "type": "nominal"},
+            "text": value_text,
+        },
+    }
+    if str(y_label or "").strip() == "%":
+        text_layer["transform"] = [
+            {
+                "calculate": f"format(datum[{json.dumps(resolved_y_field, ensure_ascii=False)}], '{value_text['format']}') + '%'",
+                "as": "__display_value__",
+            }
+        ]
+        text_layer["encoding"]["text"] = {
+            "field": "__display_value__",
+            "type": "nominal",
+        }
+
+    spec["layer"] = [
+        {"mark": arc_mark, "encoding": encode},
+        text_layer,
+    ]
     return spec
 
 

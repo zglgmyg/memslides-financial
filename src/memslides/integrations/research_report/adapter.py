@@ -204,11 +204,17 @@ def _chart_arguments(visual: JsonObject, output_stem: str, workspace: Path) -> J
             row[name] = values_by_series[series_index][category_index]
         rows.append(row)
 
+    period_axis = all(
+        re.fullmatch(r"(?:19|20)\d{2}(?:[AEP])?(?:Q[1-4]|H[12])?", str(value).strip(), re.IGNORECASE)
+        for value in categories
+    )
+
     return {
         "chart_type": mapping[source_type],
         "rows": rows,
         "x_field": "category",
         "y_fields": names,
+        "x_label": "期间" if period_axis else "类别",
         "title": str(visual.get("title", "") or ""),
         "y_label": str(visual.get("unit", "") or "").strip(),
         "note": str(visual.get("note", "") or "").strip(),
