@@ -20,9 +20,22 @@ from memslides.research_pipeline.document_intelligence.models import (
     DocumentIntelligenceSnapshot,
     EvidenceRef,
 )
+from memslides.research_pipeline.outline_generator.llm_understanding import _source_id
 from memslides.research_pipeline.visualization_generator.planning import (
     plan_visualizations,
 )
+
+
+@pytest.mark.parametrize(
+    ("document_id", "expected"),
+    [
+        ("600989_2025-10-11", "src_600989_2025-10-11"),
+        ("600989_2025-10-11_煤制烯烃龙头企业", "src_600989_2025-10-11"),
+        ("中文研报", "src_document"),
+    ],
+)
+def test_source_id_is_ascii_schema_safe(document_id: str, expected: str) -> None:
+    assert _source_id(document_id) == expected
 
 
 def test_incomplete_http_response_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:

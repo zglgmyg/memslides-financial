@@ -6,6 +6,7 @@ No context memory produced here is a persisted project data standard.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping, Sequence
 
 from memslides.research_pipeline.document_intelligence.figures import build_figure_inventory
@@ -15,6 +16,11 @@ from memslides.research_pipeline.outline_generator.front_matter import front_mat
 
 class ContextMemoryError(ValueError):
     pass
+
+
+def _source_id(document_id: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", document_id).strip("_.-")
+    return f"src_{token or 'document'}"
 
 
 def build_context_compression_messages(chunk: IntelligenceChunk) -> list[dict[str, str]]:
@@ -192,10 +198,7 @@ def build_slide_planning_messages(
     narrative_plan: Mapping[str, Any],
 ) -> list[dict[str, str]]:
     document_id = str(snapshot.metadata.get("id") or "document")
-    source_id = "src_" + "".join(
-        character if character.isalnum() or character in "_.-" else "_"
-        for character in document_id
-    ).strip("_.-")
+    source_id = _source_id(document_id)
     front_summary = front_matter_summary_payload(snapshot)
     figure_inventory = [
         item
